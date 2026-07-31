@@ -66,9 +66,11 @@ def test_invalid_credential_keyring_fails_startup(monkeypatch: pytest.MonkeyPatc
 def test_versioned_health_starts_with_bounded_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     configure_required_environment(monkeypatch)
     main_module = import_module("backend.app.main")
+    application = main_module.create_app()
 
-    with TestClient(main_module.create_app()) as client:
+    with TestClient(application) as client:
         response = client.get("/api/v1/external/health")
+        redis_client = application.state.redis
 
     assert response.status_code == 200
     assert response.json() == {
@@ -77,6 +79,7 @@ def test_versioned_health_starts_with_bounded_settings(monkeypatch: pytest.Monke
         "version": "0.1.0",
         "api_version": "v1",
     }
+    assert redis_client.connection_pool.connection_kwargs["socket_timeout"] == 2.0
 
 
 def test_compose_publishes_only_gateway_ports() -> None:

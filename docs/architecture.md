@@ -50,7 +50,13 @@ Task 2 implements the frozen HMAC v1 canonical request over method, normalized R
 
 Caller Secrets are generated with high entropy and can be consumed once by the future creation route. Only AES-256-GCM ciphertext, a 96-bit nonce, key version and SHA-256 fingerprint enter PostgreSQL. Encryption AAD binds credential ID, caller ID, public Key ID and master-key version; unavailable versions, modified AAD and tampering fail closed. A valid caller signature is required before a disabled caller receives the stable `403 CLIENT_DISABLED` response.
 
-Task 2 does not claim nonce replay protection. Atomic nonce claim, QPS and concurrency enforcement remain Task 3 Redis work.
+## Distributed Admission
+
+Task 3 adds fail-closed Redis-compatible controls without any process-local fallback. Nonce claim uses one `SET NX EX`; QPS uses a single-key Lua sliding window with Redis `TIME`; concurrency acquire, heartbeat and exact-owner release use atomic sorted-set scripts scored by server-side lease expiry. Caller, credential, nonce, request and operation identifiers are SHA-256 encoded before they enter Redis keys or members.
+
+The frozen defaults are a 600-second nonce TTL, one-second QPS window and 60-second concurrency lease. Heartbeat scheduling remains 15 seconds. Redis timeout, connection failure or malformed script response maps to stable `503 CONTROL_PLANE_UNAVAILABLE`; it never admits external inference through an in-memory limiter.
+
+Concurrent Lua behavior and TTL recovery pass under `fakeredis[lua]`. Docker is unavailable on this workstation, so the same race/TTL suite against the pinned deployment Valkey remains an integration and acceptance gate.
 
 ## Secret Handling
 

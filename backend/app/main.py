@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from pydantic import BaseModel, ConfigDict
 
+from backend.app.limits.redis import create_redis_client
 from backend.app.security.keyring import CredentialKeyring
 from backend.app.settings import Settings, load_settings
 
@@ -29,7 +30,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             active_settings.api_credential_keys,
             active_key_id=active_settings.api_credential_active_key_id,
         )
-        yield
+        redis_client = create_redis_client(str(active_settings.redis_url))
+        app.state.redis = redis_client
+        try:
+            yield
+        finally:
+            await redis_client.aclose()
 
     application = FastAPI(
         title="Zangpu API Control Plane",

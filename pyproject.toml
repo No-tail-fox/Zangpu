@@ -9,12 +9,14 @@ dependencies = [
     "fastapi>=0.115,<1",
     "pydantic-settings>=2.7,<3",
     "psycopg[binary]>=3.2,<4",
+    "redis>=5.2,<7",
     "sqlalchemy>=2.0,<3",
     "uvicorn[standard]>=0.34,<1",
 ]
 
 [dependency-groups]
 dev = [
+    "fakeredis[lua]>=2.27,<3",
     "httpx>=0.28,<1",
     "pytest>=8.3,<9",
     "pyyaml>=6,<7",
