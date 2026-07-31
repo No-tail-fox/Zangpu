@@ -1,3 +1,5 @@
+import base64
+import json
 from importlib import import_module
 from pathlib import Path
 
@@ -5,6 +7,8 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
+
+from backend.app.security.keyring import KeyringConfigurationError
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -18,7 +22,10 @@ def configure_required_environment(monkeypatch: pytest.MonkeyPatch) -> dict[str,
         "ZANGPU_BIFROST_BASE_URL": "http://bifrost:8080",
         "ZANGPU_OPENWEBUI_INTERNAL_BASE_URL": "http://openwebui:8080",
         "ZANGPU_ADMIN_SESSION_SECRET": "admin-session-secret-that-is-at-least-32-bytes",
-        "ZANGPU_CREDENTIAL_KEYRING": "credential-keyring-that-is-at-least-32-bytes",
+        "ZANGPU_API_CREDENTIAL_KEYS": json.dumps(
+            {"v1": base64.b64encode(bytes(32)).decode("ascii")}, separators=(",", ":")
+        ),
+        "ZANGPU_API_CREDENTIAL_ACTIVE_KEY_ID": "v1",
     }
     for key, value in values.items():
         monkeypatch.setenv(key, value)
@@ -42,7 +49,18 @@ def test_secret_settings_are_redacted_from_repr_and_model_dumps(monkeypatch: pyt
 
     rendered = "\n".join((repr(settings), repr(settings.model_dump()), settings.model_dump_json()))
     assert values["ZANGPU_ADMIN_SESSION_SECRET"] not in rendered
-    assert values["ZANGPU_CREDENTIAL_KEYRING"] not in rendered
+    assert values["ZANGPU_API_CREDENTIAL_KEYS"] not in rendered
+
+
+def test_invalid_credential_keyring_fails_startup(monkeypatch: pytest.MonkeyPatch) -> None:
+    configure_required_environment(monkeypatch)
+    monkeypatch.setenv("ZANGPU_API_CREDENTIAL_KEYS", "not-json")
+    settings_module = import_module("backend.app.settings")
+    main_module = import_module("backend.app.main")
+    settings = settings_module.Settings(_env_file=None)
+
+    with pytest.raises(KeyringConfigurationError), TestClient(main_module.create_app(settings)):
+        pass
 
 
 def test_versioned_health_starts_with_bounded_settings(monkeypatch: pytest.MonkeyPatch) -> None:

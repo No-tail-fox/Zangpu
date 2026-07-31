@@ -9,6 +9,7 @@ The current scaffold selects dependencies with commercially usable upstream term
 | FastAPI, Pydantic, Uvicorn | MIT / BSD-3-Clause | Backend runtime |
 | SQLAlchemy, Alembic | MIT | Database models and migrations |
 | Psycopg, psycopg-binary | LGPL-3.0-only | PostgreSQL driver |
+| cryptography 44.0.0 | Apache-2.0 OR BSD-3-Clause | AES-256-GCM caller credential protection |
 | Svelte, SvelteKit, Lucide | MIT / ISC | Operator site |
 | PostgreSQL | PostgreSQL License | Durable control-plane truth |
 | Valkey | BSD-3-Clause | Redis-compatible nonce/QPS/concurrency store |

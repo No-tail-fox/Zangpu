@@ -5,6 +5,7 @@ from pydantic import AnyHttpUrl, Field, PostgresDsn, RedisDsn, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BoundedSecret = Annotated[SecretStr, Field(min_length=32, max_length=4096)]
+CredentialKeys = Annotated[SecretStr, Field(min_length=2, max_length=16384)]
 
 
 class Settings(BaseSettings):
@@ -22,7 +23,8 @@ class Settings(BaseSettings):
     bifrost_base_url: AnyHttpUrl
     openwebui_internal_base_url: AnyHttpUrl
     admin_session_secret: BoundedSecret
-    credential_keyring: BoundedSecret
+    api_credential_keys: CredentialKeys
+    api_credential_active_key_id: str = Field(pattern=r"^[A-Za-z0-9._-]{1,64}$")
 
 
 @lru_cache(maxsize=1)

@@ -44,8 +44,16 @@ All history-bearing foreign keys use restrictive deletion and have covering inde
 
 The initial Alembic revision has one head and is verified by clean SQLite upgrade, metadata drift check, downgrade and re-upgrade. PostgreSQL SQL compilation is a source gate; execution against the deployment PostgreSQL remains an integration gate.
 
+## Caller Authentication
+
+Task 2 implements the frozen HMAC v1 canonical request over method, normalized RFC 3986 path/query, raw-body SHA-256, public Key ID, timestamp, nonce and request ID. Raw ASGI headers are parsed directly so signed duplicates cannot be collapsed. Known credential signatures use constant-time comparison; malformed headers, unknown/revoked/expired credentials, clock skew, decryption failures and bad signatures expose one `401 AUTH_FAILED` response.
+
+Caller Secrets are generated with high entropy and can be consumed once by the future creation route. Only AES-256-GCM ciphertext, a 96-bit nonce, key version and SHA-256 fingerprint enter PostgreSQL. Encryption AAD binds credential ID, caller ID, public Key ID and master-key version; unavailable versions, modified AAD and tampering fail closed. A valid caller signature is required before a disabled caller receives the stable `403 CLIENT_DISABLED` response.
+
+Task 2 does not claim nonce replay protection. Atomic nonce claim, QPS and concurrency enforcement remain Task 3 Redis work.
+
 ## Secret Handling
 
-Required Secret settings use redacted Pydantic types. Caller Secrets and Bifrost virtual keys are not browser configuration, defaults, health fields or ordinary log context. Compose requires deployment-provided values and does not ship working Secret defaults.
+Required Secret settings use redacted Pydantic types. The caller credential key ring is a bounded JSON version map supplied only by the environment or Secret Manager, and application startup validates its 32-byte keys and active version. Caller Secrets and Bifrost virtual keys are not browser configuration, defaults, health fields or ordinary log context. Compose requires deployment-provided values and does not ship working Secret defaults.
 
 ORM entities retain ciphertext for later security services, while default credential and binding response projections omit ciphertext, nonce, fingerprint and key-version fields. Terminal call events reject ORM entity and bulk mutations; retention deletion must use its future explicit bounded maintenance path.

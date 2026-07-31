@@ -5,6 +5,7 @@ description = "Independent contract API control plane for Zangpu"
 requires-python = ">=3.12,<3.14"
 dependencies = [
     "alembic>=1.14,<2",
+    "cryptography==44.0.0",
     "fastapi>=0.115,<1",
     "pydantic-settings>=2.7,<3",
     "psycopg[binary]>=3.2,<4",

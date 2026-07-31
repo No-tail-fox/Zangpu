@@ -31,4 +31,8 @@ $env:ZANGPU_DATABASE_URL='postgresql+psycopg://<user>:<password>@<host>:5432/<da
 .\.bootstrap-uv\Scripts\uv.exe run alembic upgrade head
 ```
 
-Task 0 supplies the service boundary and Task 1 supplies persistence truth only. HMAC, replay protection, distributed limits, quota admission, Bifrost proxying, credit settlement and load acceptance remain later scoped tasks.
+## Credential Key Ring
+
+`ZANGPU_API_CREDENTIAL_KEYS` is a JSON object that maps bounded version IDs to base64-encoded 32-byte AES keys. `ZANGPU_API_CREDENTIAL_ACTIVE_KEY_ID` must select one version in that object. Both values come from the deployment environment or Secret Manager; invalid JSON, key lengths or active versions fail application startup.
+
+Task 0 supplies the service boundary, Task 1 supplies persistence truth and Task 2 supplies HMAC v1 canonicalization plus protected caller credentials. Redis nonce replay protection, distributed limits, quota admission, Bifrost proxying, credit settlement and load acceptance remain later scoped tasks.

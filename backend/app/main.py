@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from pydantic import BaseModel, ConfigDict
 
+from backend.app.security.keyring import CredentialKeyring
 from backend.app.settings import Settings, load_settings
 
 SERVICE_NAME = "zangpu-api-control-plane"
@@ -22,7 +23,12 @@ class HealthResponse(BaseModel):
 def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        app.state.settings = settings or load_settings()
+        active_settings = settings or load_settings()
+        app.state.settings = active_settings
+        app.state.credential_keyring = CredentialKeyring.from_json(
+            active_settings.api_credential_keys,
+            active_key_id=active_settings.api_credential_active_key_id,
+        )
         yield
 
     application = FastAPI(
