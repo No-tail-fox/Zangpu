@@ -1,0 +1,12 @@
+{
+  auto_https off
+  admin off
+}
+
+:9000 {
+  reverse_proxy backend:9000
+}
+
+:9001 {
+  reverse_proxy web:3000
+}

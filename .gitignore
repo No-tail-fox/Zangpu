@@ -1,0 +1,17 @@
+.bootstrap-uv/
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.pyc
+
+node_modules/
+.svelte-kit/
+web/build/
+coverage/
+
+.env
+.env.*
+!.env.example
+.tmp/
+*.log
