@@ -35,6 +35,8 @@ $env:ZANGPU_DATABASE_URL='postgresql+psycopg://<user>:<password>@<host>:5432/<da
 
 `ZANGPU_API_CREDENTIAL_KEYS` is a JSON object that maps bounded version IDs to base64-encoded 32-byte AES keys. `ZANGPU_API_CREDENTIAL_ACTIVE_KEY_ID` must select one version in that object. Both values come from the deployment environment or Secret Manager; invalid JSON, key lengths or active versions fail application startup.
 
+`ZANGPU_BIFROST_MANAGEMENT_TOKEN` is an independent scoped management credential and `ZANGPU_BIFROST_EXPECTED_VERSION` must match the pinned runtime (currently `v1.6.3`). Startup calls the private health, version, config, Provider, model and virtual-key routes. It fails closed on an unexpected version, SPA HTML fallback, missing Provider/model, disabled inference authentication, enabled direct keys or any raw request/response storage/return flag.
+
 Distributed-control defaults are a 300-second timestamp tolerance, 600-second nonce TTL, 60-second concurrency lease and 15-second heartbeat. The corresponding `ZANGPU_CONTRACT_API_*` settings are bounded; nonce TTL must be at least twice the timestamp tolerance and heartbeat must stay below half the lease.
 
-Task 0 supplies the service boundary, Task 1 persistence truth, Task 2 HMAC/protected credentials and Task 3 atomic Redis nonce/QPS/concurrency primitives. SQL quota admission, Bifrost proxying, credit settlement and load acceptance remain later scoped tasks.
+Task 0 supplies the service boundary, Task 1 persistence truth, Task 2 HMAC/protected credentials, Task 3 atomic Redis nonce/QPS/concurrency primitives and Task 4 the private typed Bifrost client plus binding reconciliation. Public inference lifecycle, SQL quota admission, credit settlement and load acceptance remain later scoped tasks.

@@ -38,6 +38,8 @@ def settings_values(**overrides: object) -> dict[str, object]:
         "database_url": "postgresql+psycopg://control:control@postgres:5432/control",
         "redis_url": "redis://redis:6379/0",
         "bifrost_base_url": "http://bifrost:8080",
+        "bifrost_management_token": "bifrost-management-token-that-is-at-least-32-bytes",
+        "bifrost_expected_version": "v1.6.3",
         "openwebui_internal_base_url": "http://openwebui:8080",
         "admin_session_secret": "admin-session-secret-that-is-at-least-32-bytes",
         "api_credential_keys": json.dumps({"v1": base64.b64encode(bytes(32)).decode("ascii")}),

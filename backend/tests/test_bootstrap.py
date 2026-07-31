@@ -3,11 +3,13 @@ import json
 from importlib import import_module
 from pathlib import Path
 
+import httpx
 import pytest
 import yaml
 from fastapi.testclient import TestClient
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 
+from backend.app.integrations.bifrost.client import BifrostClient
 from backend.app.security.keyring import KeyringConfigurationError
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -20,6 +22,8 @@ def configure_required_environment(monkeypatch: pytest.MonkeyPatch) -> dict[str,
         "ZANGPU_DATABASE_URL": "postgresql+psycopg://control:control@postgres:5432/control",
         "ZANGPU_REDIS_URL": "redis://redis:6379/0",
         "ZANGPU_BIFROST_BASE_URL": "http://bifrost:8080",
+        "ZANGPU_BIFROST_MANAGEMENT_TOKEN": "bifrost-management-token-that-is-at-least-32-bytes",
+        "ZANGPU_BIFROST_EXPECTED_VERSION": "v1.6.3",
         "ZANGPU_OPENWEBUI_INTERNAL_BASE_URL": "http://openwebui:8080",
         "ZANGPU_ADMIN_SESSION_SECRET": "admin-session-secret-that-is-at-least-32-bytes",
         "ZANGPU_API_CREDENTIAL_KEYS": json.dumps(
@@ -50,6 +54,7 @@ def test_secret_settings_are_redacted_from_repr_and_model_dumps(monkeypatch: pyt
     rendered = "\n".join((repr(settings), repr(settings.model_dump()), settings.model_dump_json()))
     assert values["ZANGPU_ADMIN_SESSION_SECRET"] not in rendered
     assert values["ZANGPU_API_CREDENTIAL_KEYS"] not in rendered
+    assert values["ZANGPU_BIFROST_MANAGEMENT_TOKEN"] not in rendered
 
 
 def test_invalid_credential_keyring_fails_startup(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -66,11 +71,23 @@ def test_invalid_credential_keyring_fails_startup(monkeypatch: pytest.MonkeyPatc
 def test_versioned_health_starts_with_bounded_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     configure_required_environment(monkeypatch)
     main_module = import_module("backend.app.main")
-    application = main_module.create_app()
+
+    async def successful_preflight(_client: BifrostClient, expected_version: str) -> None:
+        assert expected_version == "v1.6.3"
+
+    application = main_module.create_app(
+        bifrost_client_factory=lambda settings: BifrostClient(
+            base_url=str(settings.bifrost_base_url),
+            management_token=SecretStr("bifrost-management-token-that-is-at-least-32-bytes"),
+            transport=httpx.MockTransport(lambda _request: httpx.Response(500, json={"unused": True})),
+        ),
+        bifrost_preflight=successful_preflight,
+    )
 
     with TestClient(application) as client:
         response = client.get("/api/v1/external/health")
         redis_client = application.state.redis
+        bifrost_client = application.state.bifrost
 
     assert response.status_code == 200
     assert response.json() == {
@@ -80,6 +97,7 @@ def test_versioned_health_starts_with_bounded_settings(monkeypatch: pytest.Monke
         "api_version": "v1",
     }
     assert redis_client.connection_pool.connection_kwargs["socket_timeout"] == 2.0
+    assert "management-token" not in repr(bifrost_client)
 
 
 def test_compose_publishes_only_gateway_ports() -> None:
@@ -92,6 +110,10 @@ def test_compose_publishes_only_gateway_ports() -> None:
     assert {"backend", "web", "bifrost", "postgres", "redis"}.issubset(services)
     for name in ("backend", "web", "bifrost", "postgres", "redis"):
         assert "ports" not in services[name]
+
+    backend_environment = services["backend"]["environment"]
+    assert "BIFROST_MANAGEMENT_TOKEN" in backend_environment["ZANGPU_BIFROST_MANAGEMENT_TOKEN"]
+    assert "BIFROST_EXPECTED_VERSION" in backend_environment["ZANGPU_BIFROST_EXPECTED_VERSION"]
 
     published_targets = {port["target"] for port in services["gateway"]["ports"]}
     assert published_targets == {9000, 9001}

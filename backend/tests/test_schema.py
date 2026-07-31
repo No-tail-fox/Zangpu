@@ -571,6 +571,17 @@ def test_binding_desired_state_and_outbox_are_atomic(engine: Engine) -> None:
                 payload={"secret": "must-not-enter-outbox"},
                 now=1_700_000_100,
             )
+        with pytest.raises(ValueError, match="sensitive"):
+            queue_binding_sync(
+                session,
+                binding=binding,
+                desired_config_hash="new-config-hash",
+                target="bifrost",
+                action="update",
+                idempotency_key="safe-key-2",
+                payload={"desired": {"secretCiphertext": "must-not-enter-outbox"}},
+                now=1_700_000_100,
+            )
 
 
 def test_every_foreign_key_has_a_covering_index(engine: Engine) -> None:

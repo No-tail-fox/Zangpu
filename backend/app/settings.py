@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     database_url: PostgresDsn
     redis_url: RedisDsn
     bifrost_base_url: AnyHttpUrl
+    bifrost_management_token: BoundedSecret
+    bifrost_expected_version: str = Field(pattern=r"^v[0-9]+\.[0-9]+\.[0-9]+$")
+    bifrost_timeout_seconds: float = Field(default=10.0, ge=1.0, le=30.0)
     openwebui_internal_base_url: AnyHttpUrl
     admin_session_secret: BoundedSecret
     api_credential_keys: CredentialKeys
@@ -29,6 +32,11 @@ class Settings(BaseSettings):
     contract_api_nonce_ttl_seconds: int = Field(default=600, ge=60, le=86_400)
     contract_api_concurrency_lease_seconds: int = Field(default=60, ge=3, le=900)
     contract_api_concurrency_heartbeat_seconds: int = Field(default=15, ge=1, le=300)
+    outbox_max_attempts: int = Field(default=8, ge=1, le=100)
+    outbox_base_retry_seconds: int = Field(default=5, ge=1, le=300)
+    outbox_max_retry_seconds: int = Field(default=300, ge=1, le=3600)
+    outbox_claim_timeout_seconds: int = Field(default=120, ge=10, le=3600)
+    outbox_batch_size: int = Field(default=25, ge=1, le=100)
 
     @model_validator(mode="after")
     def validate_distributed_control_ttls(self) -> Self:
@@ -36,6 +44,8 @@ class Settings(BaseSettings):
             raise ValueError("nonce TTL must be at least twice the timestamp tolerance")
         if self.contract_api_concurrency_heartbeat_seconds * 2 >= self.contract_api_concurrency_lease_seconds:
             raise ValueError("concurrency heartbeat must be less than half the lease")
+        if self.outbox_max_retry_seconds < self.outbox_base_retry_seconds:
+            raise ValueError("outbox maximum retry delay must not be below its base delay")
         return self
 
 

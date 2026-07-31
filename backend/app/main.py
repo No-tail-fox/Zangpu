@@ -1,9 +1,11 @@
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from pydantic import BaseModel, ConfigDict
 
+from backend.app.integrations.bifrost.client import BifrostClient
+from backend.app.integrations.bifrost.preflight import BifrostPreflightReport, verify_bifrost_preflight
 from backend.app.limits.redis import create_redis_client
 from backend.app.security.keyring import CredentialKeyring
 from backend.app.settings import Settings, load_settings
@@ -21,7 +23,20 @@ class HealthResponse(BaseModel):
     api_version: str
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_bifrost_client(settings: Settings) -> BifrostClient:
+    return BifrostClient(
+        base_url=str(settings.bifrost_base_url),
+        management_token=settings.bifrost_management_token,
+        timeout_seconds=settings.bifrost_timeout_seconds,
+    )
+
+
+def create_app(
+    settings: Settings | None = None,
+    *,
+    bifrost_client_factory: Callable[[Settings], BifrostClient] = create_bifrost_client,
+    bifrost_preflight: Callable[[BifrostClient, str], Awaitable[BifrostPreflightReport | None]] | None = None,
+) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         active_settings = settings or load_settings()
@@ -32,10 +47,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         redis_client = create_redis_client(str(active_settings.redis_url))
         app.state.redis = redis_client
+        bifrost_client: BifrostClient | None = None
         try:
+            bifrost_client = bifrost_client_factory(active_settings)
+            app.state.bifrost = bifrost_client
+            if bifrost_preflight is None:
+                app.state.bifrost_preflight = await verify_bifrost_preflight(
+                    bifrost_client, expected_version=active_settings.bifrost_expected_version
+                )
+            else:
+                app.state.bifrost_preflight = await bifrost_preflight(
+                    bifrost_client, active_settings.bifrost_expected_version
+                )
             yield
         finally:
-            await redis_client.aclose()
+            try:
+                if bifrost_client is not None:
+                    await bifrost_client.aclose()
+            finally:
+                await redis_client.aclose()
 
     application = FastAPI(
         title="Zangpu API Control Plane",

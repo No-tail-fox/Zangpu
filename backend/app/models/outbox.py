@@ -10,15 +10,21 @@ from backend.app.models.bindings import ApiClientBinding
 OUTBOX_TARGETS = ("bifrost", "openwebui")
 OUTBOX_ACTIONS = ("create", "update", "disable", "compensate")
 OUTBOX_STATUSES = ("pending", "processing", "completed", "failed")
-SENSITIVE_PAYLOAD_KEYS = {
+SENSITIVE_PAYLOAD_FRAGMENTS = (
+    "answer",
     "authorization",
-    "bifrost_value",
-    "bifrost_value_ciphertext",
+    "bifrostvalue",
+    "ciphertext",
+    "nonce",
+    "prompt",
+    "rawbody",
+    "rawrequest",
+    "rawresponse",
     "secret",
-    "secret_ciphertext",
-    "secret_nonce",
-    "x-bf-vk",
-}
+    "signature",
+    "upstreamerror",
+    "xbfvk",
+)
 
 
 class ControlOutbox(Base):
@@ -54,7 +60,12 @@ class ControlOutbox(Base):
 def payload_contains_sensitive_key(value: object) -> bool:
     if isinstance(value, Mapping):
         return any(
-            str(key).lower() in SENSITIVE_PAYLOAD_KEYS or payload_contains_sensitive_key(item)
+            not isinstance(key, str)
+            or any(
+                fragment in "".join(character.lower() for character in key if character.isalnum())
+                for fragment in SENSITIVE_PAYLOAD_FRAGMENTS
+            )
+            or payload_contains_sensitive_key(item)
             for key, item in value.items()
         )
     if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):

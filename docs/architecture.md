@@ -58,6 +58,14 @@ The frozen defaults are a 600-second nonce TTL, one-second QPS window and 60-sec
 
 Concurrent Lua behavior and TTL recovery pass under `fakeredis[lua]`. Docker is unavailable on this workstation, so the same race/TTL suite against the pinned deployment Valkey remains an integration and acceptance gate.
 
+## Bifrost Binding Reconciliation
+
+Task 4 adds a private typed client for the pinned Bifrost management and OpenAI-compatible inference routes. Management requests carry only the scoped Bifrost management token; inference requests carry only the encrypted binding's `x-bf-vk` value, so the two credentials cannot cross request surfaces. JSON response content type and bounded payload parsing are mandatory; an HTTP 200 SPA document is a protocol failure. Network/protocol failures expose stable codes without raw bodies or sensitive HTTP exception chains.
+
+Virtual-key creation material is held by a one-time redacted transport object and immediately stored as an AES-GCM envelope. Its AAD binds the local binding ID, caller ID, Bifrost virtual-key ID and master-key version. The raw value never enters response projections or outbox payloads. A combined binding becomes `active` or `disabled` only after both the Open WebUI service-user ID and protected Bifrost key fields exist; otherwise it remains `pending`.
+
+Outbox workers claim bounded batches with `FOR UPDATE SKIP LOCKED`, commit the claim, perform remote I/O without an open SQL transaction and finalize in a new transaction. Create retries reconcile by stable managed key name. Disable happens locally first, treats a missing remote key as already disabled, retries transient failures with bounded exponential backoff and stops retrying stable authentication/request errors. PostgreSQL/Bifrost execution of this worker remains a deployment integration gate; SQLite plus the live loopback Bifrost v1.6.3 PoC cover the local source contract.
+
 ## Secret Handling
 
 Required Secret settings use redacted Pydantic types. The caller credential key ring is a bounded JSON version map supplied only by the environment or Secret Manager, and application startup validates its 32-byte keys and active version. Caller Secrets and Bifrost virtual keys are not browser configuration, defaults, health fields or ordinary log context. Compose requires deployment-provided values and does not ship working Secret defaults.
