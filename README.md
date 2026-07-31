@@ -5,7 +5,8 @@ Independent contract API management service and Chinese operator site for Zangpu
 ## Local Gates
 
 ```powershell
-.\.bootstrap-uv\Scripts\uv.exe run pytest backend/tests/test_bootstrap.py -q
+.\.bootstrap-uv\Scripts\uv.exe run pytest backend/tests -q
+.\.bootstrap-uv\Scripts\uv.exe run ruff check backend
 pnpm --dir web test
 docker compose -f deploy/compose.yaml config
 ```
@@ -21,4 +22,13 @@ Create a local backend environment file outside version control with all `ZANGPU
 pnpm --dir web dev
 ```
 
-Task 0 is a bootstrap boundary only. HMAC, replay protection, distributed limits, exact quota, Bifrost proxying, credit settlement and load acceptance are implemented in later scoped tasks.
+## Database Migrations
+
+Alembic fails closed unless `sqlalchemy.url` or `ZANGPU_DATABASE_URL` is supplied. Apply the standalone control-plane schema with:
+
+```powershell
+$env:ZANGPU_DATABASE_URL='postgresql+psycopg://<user>:<password>@<host>:5432/<database>'
+.\.bootstrap-uv\Scripts\uv.exe run alembic upgrade head
+```
+
+Task 0 supplies the service boundary and Task 1 supplies persistence truth only. HMAC, replay protection, distributed limits, quota admission, Bifrost proxying, credit settlement and load acceptance remain later scoped tasks.
