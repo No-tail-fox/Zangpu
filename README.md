@@ -39,4 +39,6 @@ $env:ZANGPU_DATABASE_URL='postgresql+psycopg://<user>:<password>@<host>:5432/<da
 
 Distributed-control defaults are a 300-second timestamp tolerance, 600-second nonce TTL, 60-second concurrency lease and 15-second heartbeat. The corresponding `ZANGPU_CONTRACT_API_*` settings are bounded; nonce TTL must be at least twice the timestamp tolerance and heartbeat must stay below half the lease.
 
-Task 0 supplies the service boundary, Task 1 persistence truth, Task 2 HMAC/protected credentials, Task 3 atomic Redis nonce/QPS/concurrency primitives and Task 4 the private typed Bifrost client plus binding reconciliation. Public inference lifecycle, SQL quota admission, credit settlement and load acceptance remain later scoped tasks.
+`POST /api/v1/external/chat/completions` is the signed non-streaming caller route. It enforces a 1 MiB body cap and the smaller of the caller output limit and `ZANGPU_CONTRACT_API_MAX_OUTPUT_TOKENS` (default `4096`). All responses carry a server `X-Zangpu-Request-Id`; successful responses also include QPS limit headers.
+
+Tasks 0-6 now cover the service boundary, persistence, HMAC credentials, Redis admission, private Bifrost binding, Open WebUI credit integration and the durable non-streaming chat lifecycle. Streaming/recovery, signed models and usage, the administrator site, SDK/cURL delivery and k6 acceptance remain later scoped tasks. Real PostgreSQL, Valkey, Open WebUI and Bifrost execution remains a deployment gate because Docker is unavailable on this workstation.

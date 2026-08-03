@@ -100,6 +100,10 @@ class BifrostClient:
                 json=json,
                 params=params,
             )
+        except httpx.TimeoutException:
+            raise BifrostUpstreamError(
+                code="BIFROST_TIMEOUT", status_code=504, retryable=True
+            ) from None
         except httpx.RequestError:
             raise BifrostUpstreamError(
                 code="BIFROST_UNAVAILABLE", status_code=503, retryable=True
@@ -277,6 +281,10 @@ class BifrostClient:
                 headers={"x-bf-vk": virtual_key.get_secret_value()},
                 json=dict(payload),
             )
+        except httpx.TimeoutException:
+            raise BifrostUpstreamError(
+                code="BIFROST_TIMEOUT", status_code=504, retryable=True
+            ) from None
         except httpx.RequestError:
             raise BifrostUpstreamError(
                 code="BIFROST_UNAVAILABLE", status_code=503, retryable=True
@@ -316,6 +324,10 @@ class BifrostClient:
                     if total > MAX_INFERENCE_RESPONSE_BYTES:
                         raise BifrostProtocolError
                     yield chunk
+        except httpx.TimeoutException:
+            raise BifrostUpstreamError(
+                code="BIFROST_TIMEOUT", status_code=504, retryable=True
+            ) from None
         except httpx.RequestError:
             raise BifrostUpstreamError(
                 code="BIFROST_UNAVAILABLE", status_code=503, retryable=True

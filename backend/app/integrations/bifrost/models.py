@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
 
 class BifrostUpstreamError(RuntimeError):
@@ -189,7 +189,7 @@ class ChatMessage(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
 
     role: str
-    content: str | None = None
+    content: str | None = Field(default=None, max_length=16 * 1024 * 1024)
 
 
 class ChatChoice(BaseModel):
@@ -197,23 +197,31 @@ class ChatChoice(BaseModel):
 
     index: int = Field(ge=0)
     message: ChatMessage
-    finish_reason: str | None = None
+    finish_reason: str | None = Field(default=None, max_length=64)
 
 
 class ChatUsage(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
 
-    prompt_tokens: int = Field(ge=0)
-    completion_tokens: int = Field(ge=0)
-    total_tokens: int = Field(ge=0)
+    prompt_tokens: int = Field(ge=0, le=2**63 - 1)
+    completion_tokens: int = Field(ge=0, le=2**63 - 1)
+    total_tokens: int = Field(ge=0, le=2**63 - 1)
+
+    @model_validator(mode="after")
+    def validate_total(self) -> ChatUsage:
+        if self.total_tokens != self.prompt_tokens + self.completion_tokens:
+            raise ValueError("chat usage total does not match components")
+        return self
 
 
 class ChatCompletionResponse(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
 
-    id: str
-    model: str
-    choices: list[ChatChoice]
+    id: str = Field(min_length=1, max_length=128)
+    object: Literal["chat.completion"] = "chat.completion"
+    created: int | None = Field(default=None, ge=0, le=2**63 - 1)
+    model: str = Field(min_length=1, max_length=255)
+    choices: list[ChatChoice] = Field(min_length=1, max_length=128)
     usage: ChatUsage
 
 

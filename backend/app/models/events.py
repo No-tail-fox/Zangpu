@@ -63,6 +63,7 @@ class ApiCallEvent(Base):
     business_code: Mapped[str] = mapped_column(String(64), nullable=False)
     retryable: Mapped[bool] = mapped_column(Boolean, nullable=False)
     duration_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    quota_overrun: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     prompt_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     completion_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     total_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)

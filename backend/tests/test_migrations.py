@@ -3,7 +3,7 @@ from pathlib import Path
 from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, text
 
 from backend.app.models import Base
 
@@ -56,4 +56,46 @@ def test_migration_has_one_head_and_round_trips_cleanly(tmp_path: Path) -> None:
     command.upgrade(config, "head")
     engine = create_engine(database_url)
     assert set(inspect(engine).get_table_names()) == CONTRACT_TABLES | {"alembic_version"}
+    engine.dispose()
+
+
+def test_quota_overrun_migration_preserves_existing_events(tmp_path: Path) -> None:
+    database_path = tmp_path / "migration-existing-event.sqlite3"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+    config = migration_config(database_url)
+    command.upgrade(config, "0001")
+
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO api_call_event (
+                    id, server_request_id, client_request_id, endpoint, method,
+                    stream, outcome, stage, http_status, business_code, retryable,
+                    duration_ms, prompt_tokens, completion_tokens, total_tokens,
+                    charged_micro, qps_observed, concurrency_observed,
+                    daily_requests_after, daily_tokens_after, total_requests_after,
+                    total_tokens_after, started_at, completed_at, created_at
+                ) VALUES (
+                    'event-before-0002', 'server-before-0002', 'client-before-0002',
+                    'chat.completions', 'POST', false, 'success', 'response', 200,
+                    'OK', false, 7, 2, 3, 5, 0, 1, 1, 1, 5, 1, 5,
+                    1785420000, 1785420001, 1785420001
+                )
+                """
+            )
+        )
+    engine.dispose()
+
+    command.upgrade(config, "head")
+    engine = create_engine(database_url)
+    with engine.connect() as connection:
+        quota_overrun = connection.scalar(
+            text("SELECT quota_overrun FROM api_call_event WHERE id = 'event-before-0002'")
+        )
+    column = next(item for item in inspect(engine).get_columns("api_call_event") if item["name"] == "quota_overrun")
+    assert quota_overrun in (False, 0)
+    assert column["nullable"] is False
+    assert column["default"] is None
     engine.dispose()

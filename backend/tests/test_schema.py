@@ -103,6 +103,7 @@ def build_event(**overrides: object) -> ApiCallEvent:
         "business_code": "OK",
         "retryable": False,
         "duration_ms": 1_000,
+        "quota_overrun": False,
         "prompt_tokens": 10,
         "completion_tokens": 20,
         "total_tokens": 30,

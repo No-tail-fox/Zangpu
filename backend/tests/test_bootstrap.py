@@ -102,6 +102,7 @@ def test_versioned_health_starts_with_bounded_settings(monkeypatch: pytest.Monke
 
     with TestClient(application) as client:
         response = client.get("/api/v1/external/health")
+        database_runtime = application.state.database
         redis_client = application.state.redis
         bifrost_client = application.state.bifrost
         openwebui_client = application.state.openwebui
@@ -114,6 +115,7 @@ def test_versioned_health_starts_with_bounded_settings(monkeypatch: pytest.Monke
         "api_version": "v1",
     }
     assert redis_client.connection_pool.connection_kwargs["socket_timeout"] == 2.0
+    assert "control:control" not in repr(database_runtime)
     assert "management-token" not in repr(bifrost_client)
     assert "redaction-sentinel" not in repr(openwebui_client)
     assert openwebui_requests == []
@@ -137,6 +139,7 @@ def test_compose_publishes_only_gateway_ports() -> None:
     assert "OPENWEBUI_INTERNAL_BASE_URL" in backend_environment["ZANGPU_OPENWEBUI_INTERNAL_BASE_URL"]
     assert "OPENWEBUI_INTERNAL_SERVICE_ID" in backend_environment["ZANGPU_OPENWEBUI_INTERNAL_SERVICE_ID"]
     assert "OPENWEBUI_INTERNAL_SERVICE_SECRET" in backend_environment["ZANGPU_OPENWEBUI_INTERNAL_SERVICE_SECRET"]
+    assert backend_environment["ZANGPU_CONTRACT_API_MAX_OUTPUT_TOKENS"] == "${CONTRACT_API_MAX_OUTPUT_TOKENS:-4096}"
     assert "openwebui" not in services
 
     published_targets = {port["target"] for port in services["gateway"]["ports"]}

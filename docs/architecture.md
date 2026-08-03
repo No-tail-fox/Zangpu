@@ -42,7 +42,7 @@ Task 1 establishes these standalone PostgreSQL truths without adding public mana
 
 All history-bearing foreign keys use restrictive deletion and have covering indexes. Admin audits contain only changed field names and bounded redacted before/after summaries; audit rows reject Secret, ciphertext, Authorization, signature, nonce, request content and raw upstream error fields. Pending/error bindings may exist before remote IDs are assigned; active/disabled bindings require complete remote identifiers and encrypted Bifrost material. Outbox payloads contain desired configuration only, never Secret, authorization or ciphertext fields.
 
-The initial Alembic revision has one head and is verified by clean SQLite upgrade, metadata drift check, downgrade and re-upgrade. PostgreSQL SQL compilation is a source gate; execution against the deployment PostgreSQL remains an integration gate.
+The Alembic chain has one head and is verified by clean SQLite upgrade, metadata drift check, downgrade and re-upgrade. Revision `0002` adds immutable `quota_overrun` evidence while preserving existing event rows. PostgreSQL SQL compilation is a source gate; execution against the deployment PostgreSQL remains an integration gate.
 
 ## Caller Authentication
 
@@ -73,6 +73,16 @@ Task 5 keeps Open WebUI as the only balance authority. The control plane calls s
 Every request is compact sorted JSON signed with HMAC-SHA256 over the protocol version, service ID, timestamp, uppercase method, raw target and body digest. Only the dedicated internal service ID, timestamp and signature cross this boundary; caller Secrets, nonces, Authorization headers and Bifrost keys do not. Open WebUI independently enforces the matching service identity, Secret, clock skew and direct source CIDR allow-list.
 
 The application owns one bounded typed Open WebUI client and closes it during lifespan shutdown. Startup creates the client but sends no mutating service-user request or speculative preflight. Open WebUI remains an externally supplied private-network origin rather than a Compose-owned service, so real PostgreSQL cross-service execution remains a deployment integration gate.
+
+## External Chat Lifecycle
+
+Task 6 exposes only `POST /api/v1/external/chat/completions` and only the bounded non-streaming OpenAI-compatible request subset. The raw JSON body is capped at 1 MiB, output Tokens are bounded by both caller policy and `ZANGPU_CONTRACT_API_MAX_OUTPUT_TOKENS`, and caller-supplied tools, files, direct Provider controls and unknown fields are rejected rather than forwarded.
+
+Admission order is fixed: raw request bounds, HMAC authentication, nonce claim, endpoint/model policy, QPS, concurrency lease, SQL request/Token reservation, Open WebUI credit reservation, Bifrost inference, credit settlement, SQL terminal event, then exact-owner concurrency release. Credential/client state is re-read under the SQL reservation transaction so a post-signature revoke or expiry cannot race through quota admission.
+
+The signed caller request ID is the idempotency key. A matching pending operation returns `REQUEST_IN_PROGRESS`; a matching terminal operation returns `REQUEST_ALREADY_COMPLETED`; a different fingerprint returns `REQUEST_ID_CONFLICT`. The response body is not stored or replayed, and none of these cases can invoke Bifrost or credit admission a second time. Provider failures cancel credit before releasing unused Token reservation. If Provider usage exists but credit settlement is uncertain, the operation remains pending with protected settlement and usage evidence for a later recovery task rather than guessing or double charging.
+
+Every public response uses the bounded contract error envelope and a server-generated `X-Zangpu-Request-Id`; successful responses also carry the applicable QPS limit, remaining and reset headers. Events contain stable codes, measured milliseconds, actual Token/charge counters and `quota_overrun`, never prompts, answers, Secrets, signatures, nonces, virtual keys or raw upstream errors. Streaming heartbeat/disconnect recovery, signed models/usage routes, SDK/cURL examples and k6 acceptance remain separate follow-on tasks.
 
 ## Secret Handling
 

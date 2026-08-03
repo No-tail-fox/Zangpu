@@ -9,6 +9,8 @@ from fastapi.responses import JSONResponse
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
 
+from backend.app.api.errors import external_error_response
+
 REDIS_NAMESPACE_RE = re.compile(r"^[a-z_]{1,32}$")
 LUA_SCRIPT_RE = re.compile(r"^[a-z_]{1,64}\.lua$")
 
@@ -24,21 +26,7 @@ class ControlPlaneUnavailable(RuntimeError):
         super().__init__("distributed control unavailable")
 
     def to_response(self, server_request_id: str) -> JSONResponse:
-        return JSONResponse(
-            status_code=503,
-            content={
-                "error": {
-                    "code": "CONTROL_PLANE_UNAVAILABLE",
-                    "message": "Control plane is temporarily unavailable.",
-                    "request_id": server_request_id,
-                    "retryable": True,
-                }
-            },
-            headers={
-                "Cache-Control": "no-store",
-                "X-Zangpu-Request-Id": server_request_id,
-            },
-        )
+        return external_error_response("CONTROL_PLANE_UNAVAILABLE", server_request_id=server_request_id)
 
 
 def create_redis_client(

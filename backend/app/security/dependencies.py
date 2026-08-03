@@ -5,6 +5,7 @@ from time import time
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
+from backend.app.api.errors import external_error_response
 from backend.app.security.canonical import (
     LOWER_HEX_SHA256_RE,
     SIGNATURE_VERSION,
@@ -96,21 +97,7 @@ class ExternalAuthFailure(RuntimeError):
         self.category = category
 
     def to_response(self, server_request_id: str) -> JSONResponse:
-        return JSONResponse(
-            status_code=401,
-            content={
-                "error": {
-                    "code": "AUTH_FAILED",
-                    "message": "Authentication failed.",
-                    "request_id": server_request_id,
-                    "retryable": False,
-                }
-            },
-            headers={
-                "Cache-Control": "no-store",
-                "X-Zangpu-Request-Id": server_request_id,
-            },
-        )
+        return external_error_response("AUTH_FAILED", server_request_id=server_request_id)
 
 
 class ExternalClientDisabled(RuntimeError):
@@ -118,21 +105,7 @@ class ExternalClientDisabled(RuntimeError):
         super().__init__("external client is disabled")
 
     def to_response(self, server_request_id: str) -> JSONResponse:
-        return JSONResponse(
-            status_code=403,
-            content={
-                "error": {
-                    "code": "CLIENT_DISABLED",
-                    "message": "Client is disabled.",
-                    "request_id": server_request_id,
-                    "retryable": False,
-                }
-            },
-            headers={
-                "Cache-Control": "no-store",
-                "X-Zangpu-Request-Id": server_request_id,
-            },
-        )
+        return external_error_response("CLIENT_DISABLED", server_request_id=server_request_id)
 
 
 CredentialResolver = Callable[[str], Awaitable[ResolvedCallerCredential | None]]

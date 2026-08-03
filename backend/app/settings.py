@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     contract_api_nonce_ttl_seconds: int = Field(default=600, ge=60, le=86_400)
     contract_api_concurrency_lease_seconds: int = Field(default=60, ge=3, le=900)
     contract_api_concurrency_heartbeat_seconds: int = Field(default=15, ge=1, le=300)
+    contract_api_max_output_tokens: int = Field(default=4096, ge=1, le=1_000_000)
     outbox_max_attempts: int = Field(default=8, ge=1, le=100)
     outbox_base_retry_seconds: int = Field(default=5, ge=1, le=300)
     outbox_max_retry_seconds: int = Field(default=300, ge=1, le=3600)

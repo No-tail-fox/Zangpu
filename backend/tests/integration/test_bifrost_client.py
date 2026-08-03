@@ -229,3 +229,29 @@ def test_network_failure_drops_the_sensitive_http_exception_chain() -> None:
     failure = asyncio.run(scenario())
     assert failure.code == "BIFROST_UNAVAILABLE" and failure.__cause__ is None
     assert VIRTUAL_KEY_VALUE not in repr(failure)
+
+
+def test_inference_timeout_has_a_distinct_sanitized_contract() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("raw timeout detail", request=request)
+
+    async def scenario() -> BifrostUpstreamError:
+        client = BifrostClient(
+            base_url="http://bifrost:8080",
+            management_token=SecretStr(MANAGEMENT_TOKEN),
+            transport=httpx.MockTransport(handler),
+        )
+        with pytest.raises(BifrostUpstreamError) as captured:
+            await client.forward_chat_completion(
+                {"model": "model-1", "messages": []},
+                virtual_key=SecretStr(VIRTUAL_KEY_VALUE),
+            )
+        await client.aclose()
+        return captured.value
+
+    failure = asyncio.run(scenario())
+
+    assert (failure.code, failure.status_code, failure.retryable) == ("BIFROST_TIMEOUT", 504, True)
+    assert failure.__cause__ is None
+    assert "raw timeout detail" not in str(failure)
+    assert VIRTUAL_KEY_VALUE not in repr(failure)

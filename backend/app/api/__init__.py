@@ -1,0 +1,1 @@
+"""Versioned external API contracts."""
