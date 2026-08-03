@@ -25,6 +25,13 @@ class Settings(BaseSettings):
     bifrost_expected_version: str = Field(pattern=r"^v[0-9]+\.[0-9]+\.[0-9]+$")
     bifrost_timeout_seconds: float = Field(default=10.0, ge=1.0, le=30.0)
     openwebui_internal_base_url: AnyHttpUrl
+    openwebui_internal_service_id: str = Field(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9._-]+$",
+    )
+    openwebui_internal_service_secret: BoundedSecret
+    openwebui_internal_timeout_seconds: float = Field(default=10.0, ge=1.0, le=30.0)
     admin_session_secret: BoundedSecret
     api_credential_keys: CredentialKeys
     api_credential_active_key_id: str = Field(pattern=r"^[A-Za-z0-9._-]{1,64}$")

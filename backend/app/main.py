@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict
 
 from backend.app.integrations.bifrost.client import BifrostClient
 from backend.app.integrations.bifrost.preflight import BifrostPreflightReport, verify_bifrost_preflight
+from backend.app.integrations.openwebui.client import OpenWebUIClient
 from backend.app.limits.redis import create_redis_client
 from backend.app.security.keyring import CredentialKeyring
 from backend.app.settings import Settings, load_settings
@@ -31,11 +32,21 @@ def create_bifrost_client(settings: Settings) -> BifrostClient:
     )
 
 
+def create_openwebui_client(settings: Settings) -> OpenWebUIClient:
+    return OpenWebUIClient(
+        base_url=str(settings.openwebui_internal_base_url),
+        service_id=settings.openwebui_internal_service_id,
+        service_secret=settings.openwebui_internal_service_secret,
+        timeout_seconds=settings.openwebui_internal_timeout_seconds,
+    )
+
+
 def create_app(
     settings: Settings | None = None,
     *,
     bifrost_client_factory: Callable[[Settings], BifrostClient] = create_bifrost_client,
     bifrost_preflight: Callable[[BifrostClient, str], Awaitable[BifrostPreflightReport | None]] | None = None,
+    openwebui_client_factory: Callable[[Settings], OpenWebUIClient] = create_openwebui_client,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -48,9 +59,12 @@ def create_app(
         redis_client = create_redis_client(str(active_settings.redis_url))
         app.state.redis = redis_client
         bifrost_client: BifrostClient | None = None
+        openwebui_client: OpenWebUIClient | None = None
         try:
             bifrost_client = bifrost_client_factory(active_settings)
             app.state.bifrost = bifrost_client
+            openwebui_client = openwebui_client_factory(active_settings)
+            app.state.openwebui = openwebui_client
             if bifrost_preflight is None:
                 app.state.bifrost_preflight = await verify_bifrost_preflight(
                     bifrost_client, expected_version=active_settings.bifrost_expected_version
@@ -62,10 +76,14 @@ def create_app(
             yield
         finally:
             try:
-                if bifrost_client is not None:
-                    await bifrost_client.aclose()
+                if openwebui_client is not None:
+                    await openwebui_client.aclose()
             finally:
-                await redis_client.aclose()
+                try:
+                    if bifrost_client is not None:
+                        await bifrost_client.aclose()
+                finally:
+                    await redis_client.aclose()
 
     application = FastAPI(
         title="Zangpu API Control Plane",

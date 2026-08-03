@@ -66,6 +66,14 @@ Virtual-key creation material is held by a one-time redacted transport object an
 
 Outbox workers claim bounded batches with `FOR UPDATE SKIP LOCKED`, commit the claim, perform remote I/O without an open SQL transaction and finalize in a new transaction. Create retries reconcile by stable managed key name. Disable happens locally first, treats a missing remote key as already disabled, retries transient failures with bounded exponential backoff and stops retrying stable authentication/request errors. PostgreSQL/Bifrost execution of this worker remains a deployment integration gate; SQLite plus the live loopback Bifrost v1.6.3 PoC cover the local source contract.
 
+## Open WebUI Credit Lifecycle
+
+Task 5 keeps Open WebUI as the only balance authority. The control plane calls six hidden internal routes to resolve a deterministic non-login service user and reserve, settle, cancel, refund or inspect one UUID-addressed operation. It never writes Open WebUI credit tables directly. Reservation and terminal retries reuse the same operation identity; refund accepts no caller-supplied amount and is one idempotent full correction derived from the charged settlement.
+
+Every request is compact sorted JSON signed with HMAC-SHA256 over the protocol version, service ID, timestamp, uppercase method, raw target and body digest. Only the dedicated internal service ID, timestamp and signature cross this boundary; caller Secrets, nonces, Authorization headers and Bifrost keys do not. Open WebUI independently enforces the matching service identity, Secret, clock skew and direct source CIDR allow-list.
+
+The application owns one bounded typed Open WebUI client and closes it during lifespan shutdown. Startup creates the client but sends no mutating service-user request or speculative preflight. Open WebUI remains an externally supplied private-network origin rather than a Compose-owned service, so real PostgreSQL cross-service execution remains a deployment integration gate.
+
 ## Secret Handling
 
 Required Secret settings use redacted Pydantic types. The caller credential key ring is a bounded JSON version map supplied only by the environment or Secret Manager, and application startup validates its 32-byte keys and active version. Caller Secrets and Bifrost virtual keys are not browser configuration, defaults, health fields or ordinary log context. Compose requires deployment-provided values and does not ship working Secret defaults.

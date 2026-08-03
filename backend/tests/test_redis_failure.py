@@ -41,6 +41,8 @@ def settings_values(**overrides: object) -> dict[str, object]:
         "bifrost_management_token": "bifrost-management-token-that-is-at-least-32-bytes",
         "bifrost_expected_version": "v1.6.3",
         "openwebui_internal_base_url": "http://openwebui:8080",
+        "openwebui_internal_service_id": "zangpu-api-control-plane",
+        "openwebui_internal_service_secret": "openwebui-internal-secret-redaction-sentinel",
         "admin_session_secret": "admin-session-secret-that-is-at-least-32-bytes",
         "api_credential_keys": json.dumps({"v1": base64.b64encode(bytes(32)).decode("ascii")}),
         "api_credential_active_key_id": "v1",
@@ -67,6 +69,7 @@ def test_distributed_control_settings_enforce_ttl_relationships() -> None:
                 contract_api_concurrency_heartbeat_seconds=30,
             )
         )  # type: ignore[arg-type]
+
 
 def test_redis_identifiers_are_hash_only() -> None:
     identifier = redis_identifier("caller-sensitive-value")
