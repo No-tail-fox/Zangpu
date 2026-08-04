@@ -99,3 +99,48 @@ def test_quota_overrun_migration_preserves_existing_events(tmp_path: Path) -> No
     assert column["nullable"] is False
     assert column["default"] is None
     engine.dispose()
+
+
+def test_stream_evidence_migration_preserves_existing_operations(tmp_path: Path) -> None:
+    database_path = tmp_path / "migration-existing-operation.sqlite3"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+    config = migration_config(database_url)
+    command.upgrade(config, "0002")
+
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO api_call_operation (
+                    id, api_client_id, credential_id, client_request_id,
+                    request_fingerprint, endpoint, method, model_id, status,
+                    reserved_tokens, prompt_tokens, completion_tokens, total_tokens,
+                    started_at, updated_at
+                ) VALUES (
+                    'operation-before-0003', 'client-before-0003', 'credential-before-0003',
+                    'request_before_0003',
+                    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                    'chat.completions', 'POST', 'model-1', 'pending',
+                    32, 0, 0, 0, 1785420000, 1785420000
+                )
+                """
+            )
+        )
+    engine.dispose()
+
+    command.upgrade(config, "head")
+    engine = create_engine(database_url)
+    with engine.connect() as connection:
+        evidence = connection.execute(
+            text(
+                "SELECT stream, provider_usage_recorded FROM api_call_operation "
+                "WHERE id = 'operation-before-0003'"
+            )
+        ).one()
+    columns = {item["name"]: item for item in inspect(engine).get_columns("api_call_operation")}
+    assert tuple(evidence) in ((False, False), (0, 0))
+    for name in ("stream", "provider_usage_recorded"):
+        assert columns[name]["nullable"] is False
+        assert columns[name]["default"] is None
+    engine.dispose()

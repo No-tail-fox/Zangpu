@@ -305,6 +305,7 @@ class BifrostClient:
     ) -> AsyncIterator[bytes]:
         request_payload = dict(payload)
         request_payload["stream"] = True
+        request_payload["stream_options"] = {"include_usage": True}
         try:
             async with self._client.stream(
                 "POST",

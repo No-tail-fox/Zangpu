@@ -27,6 +27,7 @@ ERROR_SPECS = {
     "REQUEST_ALREADY_COMPLETED": ExternalErrorSpec(409, "Request was already completed.", False),
     "REQUEST_ID_CONFLICT": ExternalErrorSpec(409, "Request ID conflicts with another request.", False),
     "PAYLOAD_TOO_LARGE": ExternalErrorSpec(413, "Request payload is too large.", False),
+    "CLIENT_DISCONNECTED": ExternalErrorSpec(499, "Client disconnected.", False),
     "QPS_LIMITED": ExternalErrorSpec(429, "Request rate limit exceeded.", True),
     "CONCURRENCY_LIMITED": ExternalErrorSpec(429, "Concurrency limit exceeded.", True),
     "DAILY_REQUEST_QUOTA_EXCEEDED": ExternalErrorSpec(429, "Daily request quota exceeded.", False),

@@ -1,6 +1,6 @@
 from typing import TYPE_CHECKING
 
-from sqlalchemy import BigInteger, CheckConstraint, ForeignKey, Index, Integer, String, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, ForeignKey, Index, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.models.base import Base, new_uuid, utc_epoch_seconds
@@ -42,11 +42,13 @@ class ApiCallOperation(Base):
     endpoint: Mapped[str] = mapped_column(String(64), nullable=False)
     method: Mapped[str] = mapped_column(String(8), nullable=False)
     model_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    stream: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
     reserved_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     prompt_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     completion_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     total_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    provider_usage_recorded: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     credit_settlement_id: Mapped[str | None] = mapped_column(String(128))
     usage_operation_id: Mapped[str | None] = mapped_column(String(128))
     terminal_http_status: Mapped[int | None] = mapped_column(Integer)

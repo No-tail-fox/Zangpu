@@ -309,3 +309,85 @@ def test_signed_http_lifecycle_is_exact_once_across_all_local_components(
     assert (operation_count, event_count) == (1, 1)
     assert daily is not None and (daily.request_count, daily.token_reserved, daily.token_consumed) == (1, 0, 8)
     assert UUID(repeated.json()["error"]["operation_id"])
+
+
+def test_signed_http_stream_uses_sse_and_commits_before_done(monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime, serialized_keys, caller_secret = seed_runtime()
+    redis = FakeRedis()
+    monkeypatch.setattr("backend.app.main.create_redis_client", lambda _url: redis)
+    bifrost_payloads: list[dict[str, object]] = []
+    credit_calls: list[str] = []
+
+    def bifrost_handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["x-bf-vk"] == VIRTUAL_KEY_VALUE
+        bifrost_payloads.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=(
+                b'data: {"id":"chatcmpl-http-stream-1","object":"chat.completion.chunk",'
+                b'"model":"model-1","choices":[{"index":0,"delta":{"content":"answer"}}]}\n\n'
+                b'data: {"id":"chatcmpl-http-stream-1","object":"chat.completion.chunk",'
+                b'"model":"model-1","choices":[],"usage":{"prompt_tokens":5,'
+                b'"completion_tokens":3,"total_tokens":8}}\n\n'
+                b"data: [DONE]\n\n"
+            ),
+        )
+
+    async def successful_preflight(_client: BifrostClient, _version: str) -> None:
+        return None
+
+    application = create_app(
+        settings(serialized_keys),
+        database_factory=lambda _settings: runtime,
+        bifrost_client_factory=lambda active: BifrostClient(
+            base_url=str(active.bifrost_base_url),
+            management_token=active.bifrost_management_token,
+            transport=httpx.MockTransport(bifrost_handler),
+        ),
+        bifrost_preflight=successful_preflight,
+        openwebui_client_factory=lambda active: OpenWebUIClient(
+            base_url=str(active.openwebui_internal_base_url),
+            service_id=active.openwebui_internal_service_id,
+            service_secret=active.openwebui_internal_service_secret,
+            transport=httpx.MockTransport(openwebui_handler(credit_calls)),
+        ),
+    )
+    body = json.dumps(
+        {
+            "model": "model-1",
+            "messages": [{"role": "user", "content": "hello"}],
+            "stream": True,
+            "max_tokens": 32,
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+
+    with TestClient(application) as client:
+        response = client.post(
+            "/api/v1/external/chat/completions",
+            content=body,
+            headers=signed_headers(body, secret=caller_secret, nonce="nonce_stream_0123456789"),
+        )
+        with runtime.sessions() as session:
+            operation = session.scalar(select(ApiCallOperation))
+            event = session.scalar(select(ApiCallEvent))
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert response.headers["x-accel-buffering"] == "no"
+    assert response.headers["x-zangpu-request-id"].startswith("req_")
+    assert response.content.endswith(b"data: [DONE]\n\n")
+    assert bifrost_payloads == [
+        {
+            "max_tokens": 32,
+            "messages": [{"content": "hello", "role": "user"}],
+            "model": "model-1",
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+    ]
+    assert credit_calls == ["reserve", "settle"]
+    assert operation is not None and (operation.stream, operation.status) == (True, "completed")
+    assert event is not None and (event.stream, event.total_tokens) == (True, 8)

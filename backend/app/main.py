@@ -102,6 +102,7 @@ def create_app(
                 bifrost=bifrost_client,
                 openwebui=openwebui_client,
                 global_max_output_tokens=active_settings.contract_api_max_output_tokens,
+                heartbeat_interval_seconds=active_settings.contract_api_concurrency_heartbeat_seconds,
             )
             if bifrost_preflight is None:
                 app.state.bifrost_preflight = await verify_bifrost_preflight(

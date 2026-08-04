@@ -146,12 +146,14 @@ def test_virtual_key_ids_cannot_escape_the_management_route() -> None:
 
 def test_normal_and_sse_forwarding_keep_management_auth_out_and_map_errors() -> None:
     inference_headers: list[dict[str, str]] = []
+    inference_payloads: list[dict[str, object]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         inference_headers.append(dict(request.headers))
         assert request.headers.get("x-bf-vk") == VIRTUAL_KEY_VALUE
         assert "authorization" not in request.headers
         payload = json.loads(request.content)
+        inference_payloads.append(payload)
         if payload.get("model") == "rate-limited":
             return httpx.Response(429, json={"error": {"type": "request_limited", "message": "raw vendor text"}})
         if payload.get("stream"):
@@ -203,6 +205,7 @@ def test_normal_and_sse_forwarding_keep_management_auth_out_and_map_errors() -> 
 
     assert result.usage.total_tokens == 2
     assert b"[DONE]" in chunks
+    assert inference_payloads[1]["stream_options"] == {"include_usage": True}
     assert (failure.code, failure.status_code, failure.retryable) == ("BIFROST_RATE_LIMITED", 429, True)
     assert "raw vendor text" not in str(failure)
     assert all(MANAGEMENT_TOKEN not in repr(headers) for headers in inference_headers)

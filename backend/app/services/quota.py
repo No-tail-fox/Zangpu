@@ -213,6 +213,7 @@ def reserve_operation(
     client_request_id: str,
     request_fingerprint: str,
     model_id: str,
+    stream: bool = False,
     reserved_tokens: int,
     now: int,
 ) -> OperationReservation:
@@ -222,6 +223,8 @@ def reserve_operation(
         raise ValueError("request fingerprint is invalid")
     if not model_id or len(model_id) > 255:
         raise ValueError("model ID is invalid")
+    if not isinstance(stream, bool):
+        raise ValueError("stream mode is invalid")
     if not 1 <= reserved_tokens <= SIGNED_BIGINT_MAX:
         raise ValueError("reserved tokens are invalid")
 
@@ -296,11 +299,13 @@ def reserve_operation(
             endpoint="chat.completions",
             method="POST",
             model_id=model_id,
+            stream=stream,
             status="pending",
             reserved_tokens=reserved_tokens,
             prompt_tokens=0,
             completion_tokens=0,
             total_tokens=0,
+            provider_usage_recorded=False,
             started_at=now,
             updated_at=now,
         )
@@ -363,13 +368,34 @@ def record_provider_usage(
         operation.total_tokens,
     )
     incoming = (prompt_tokens, completion_tokens, total_tokens)
-    if existing != (0, 0, 0) and existing != incoming:
+    if operation.provider_usage_recorded and existing != incoming:
         raise QuotaStateError("provider usage conflicts")
     operation.prompt_tokens = prompt_tokens
     operation.completion_tokens = completion_tokens
     operation.total_tokens = total_tokens
+    operation.provider_usage_recorded = True
     operation.updated_at = now
     session.flush()
+
+
+def touch_pending_operation(
+    session: Session,
+    *,
+    operation_id: str,
+    now: int,
+) -> bool:
+    if now < 0:
+        raise ValueError("operation heartbeat time is invalid")
+    operation = session.scalar(
+        select(ApiCallOperation).where(ApiCallOperation.id == operation_id).with_for_update()
+    )
+    if operation is None:
+        raise QuotaStateError("operation is unavailable")
+    if operation.status != "pending":
+        return False
+    operation.updated_at = max(operation.updated_at, now)
+    session.flush()
+    return True
 
 
 def _terminal_snapshot(
@@ -446,7 +472,7 @@ def finalize_operation(
             endpoint=operation.endpoint,
             method=operation.method,
             model_id=operation.model_id,
-            stream=False,
+            stream=operation.stream,
             outcome=terminal.outcome,
             stage=terminal.stage,
             http_status=terminal.http_status,

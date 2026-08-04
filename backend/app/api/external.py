@@ -1,7 +1,7 @@
 from uuid import uuid4
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import ValidationError
 
 from backend.app.api.errors import ExternalApiError, external_error_response
@@ -47,7 +47,7 @@ async def _bounded_json_body(request: Request) -> bytes:
 
 
 @router.post("/chat/completions")
-async def external_chat_completion(request: Request) -> JSONResponse:
+async def external_chat_completion(request: Request) -> Response:
     server_request_id = new_server_request_id()
     try:
         body = await _bounded_json_body(request)
@@ -61,6 +61,23 @@ async def external_chat_completion(request: Request) -> JSONResponse:
             request.app.state.external_authenticator,
         )
         service: ExternalChatService = request.app.state.external_chat_service
+        if chat_request.stream:
+            result = await service.prepare_stream(
+                request=chat_request,
+                caller=caller,
+                server_request_id=server_request_id,
+                request_fingerprint=body_sha256_hex(body),
+            )
+            return StreamingResponse(
+                result.stream,
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-store, no-transform",
+                    "X-Accel-Buffering": "no",
+                    "X-Zangpu-Request-Id": server_request_id,
+                    **result.rate_limit_headers,
+                },
+            )
         result = await service.execute(
             request=chat_request,
             caller=caller,
