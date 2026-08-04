@@ -55,6 +55,19 @@ class CallerPolicy:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class CallerMetadataPolicy:
+    api_client_id: str
+    credential_id: str
+    allowed_endpoints: tuple[str, ...]
+    allowed_models: tuple[str, ...]
+    qps_limit: int
+    daily_request_limit: int | None
+    daily_token_limit: int | None
+    total_request_limit: int | None
+    total_token_limit: int | None
+
+
 class DatabaseCredentialResolver:
     __slots__ = ("_sessions",)
 
@@ -143,4 +156,41 @@ def load_caller_policy(
         max_output_tokens_per_request=client.max_output_tokens_per_request,
         service_user_id=service_user_id,
         bifrost_virtual_key=virtual_key,
+    )
+
+
+def load_caller_metadata_policy(
+    session: Session,
+    *,
+    caller: AuthenticatedCaller,
+    now: int,
+) -> CallerMetadataPolicy:
+    row = session.execute(
+        select(ApiClient, ApiClientCredential)
+        .join(ApiClientCredential, ApiClientCredential.api_client_id == ApiClient.id)
+        .where(
+            ApiClient.id == caller.api_client_id,
+            ApiClientCredential.id == caller.credential_id,
+            ApiClientCredential.key_id == caller.key_id,
+        )
+    ).one_or_none()
+    if row is None:
+        raise CallerPolicyError("CALLER_STATE_UNAVAILABLE")
+    client, credential = row
+    if client.status != "active":
+        raise CallerPolicyError("CLIENT_DISABLED")
+    if credential.status != "active":
+        raise CallerPolicyError("CREDENTIAL_REVOKED")
+    if credential.expires_at is not None and credential.expires_at <= now:
+        raise CallerPolicyError("CREDENTIAL_EXPIRED")
+    return CallerMetadataPolicy(
+        api_client_id=client.id,
+        credential_id=credential.id,
+        allowed_endpoints=tuple(client.allowed_endpoints),
+        allowed_models=tuple(client.allowed_models),
+        qps_limit=client.qps_limit,
+        daily_request_limit=client.daily_request_limit,
+        daily_token_limit=client.daily_token_limit,
+        total_request_limit=client.total_request_limit,
+        total_token_limit=client.total_token_limit,
     )

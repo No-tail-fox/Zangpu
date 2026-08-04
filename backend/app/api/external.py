@@ -14,6 +14,7 @@ from backend.app.security.dependencies import (
     authenticate_http_request,
 )
 from backend.app.services.chat import ExternalChatService
+from backend.app.services.metadata import ExternalMetadataService
 
 MAX_EXTERNAL_BODY_BYTES = 1024 * 1024
 
@@ -44,6 +45,52 @@ async def _bounded_json_body(request: Request) -> bytes:
     if not body:
         raise ExternalApiError("INVALID_REQUEST")
     return body
+
+
+async def _external_metadata_response(request: Request, *, resource: str) -> Response:
+    server_request_id = new_server_request_id()
+    try:
+        caller = await authenticate_http_request(
+            request,
+            request.app.state.external_authenticator,
+        )
+        if request.scope.get("query_string", b"") or await request.body():
+            raise ExternalApiError("INVALID_REQUEST")
+        service: ExternalMetadataService = request.app.state.external_metadata_service
+        if resource == "models":
+            result = await service.list_models(caller=caller, server_request_id=server_request_id)
+        elif resource == "usage":
+            result = await service.get_usage(caller=caller, server_request_id=server_request_id)
+        else:
+            raise RuntimeError("unknown external metadata resource")
+        return JSONResponse(
+            content=result.response.model_dump(mode="json"),
+            headers={
+                "Cache-Control": "no-store",
+                "X-Zangpu-Request-Id": server_request_id,
+                **result.rate_limit_headers,
+            },
+        )
+    except ExternalApiError as exc:
+        return exc.to_response(server_request_id)
+    except ExternalAuthFailure:
+        return external_error_response("AUTH_FAILED", server_request_id=server_request_id)
+    except ExternalClientDisabled:
+        return external_error_response("CLIENT_DISABLED", server_request_id=server_request_id)
+    except ControlPlaneUnavailable:
+        return external_error_response("CONTROL_PLANE_UNAVAILABLE", server_request_id=server_request_id)
+    except Exception:
+        return external_error_response("INTERNAL_ERROR", server_request_id=server_request_id)
+
+
+@router.get("/models")
+async def external_models(request: Request) -> Response:
+    return await _external_metadata_response(request, resource="models")
+
+
+@router.get("/usage")
+async def external_usage(request: Request) -> Response:
+    return await _external_metadata_response(request, resource="usage")
 
 
 @router.post("/chat/completions")

@@ -17,6 +17,7 @@ from backend.app.security.dependencies import ExternalAuthenticator
 from backend.app.security.keyring import CredentialKeyring
 from backend.app.services.callers import DatabaseCredentialResolver
 from backend.app.services.chat import ExternalChatService
+from backend.app.services.metadata import ExternalMetadataService
 from backend.app.settings import Settings, load_settings
 
 SERVICE_NAME = "zangpu-api-control-plane"
@@ -87,14 +88,16 @@ def create_app(
                 resolver=DatabaseCredentialResolver(database_runtime.sessions),
                 timestamp_tolerance_seconds=active_settings.contract_api_timestamp_tolerance_seconds,
             )
+            nonce_guard = NonceGuard(
+                redis_client,
+                ttl_seconds=active_settings.contract_api_nonce_ttl_seconds,
+            )
+            qps_limiter = SlidingWindowQps(redis_client)
             app.state.external_chat_service = ExternalChatService(
                 sessions=database_runtime.sessions,
                 keyring=app.state.credential_keyring,
-                nonce_guard=NonceGuard(
-                    redis_client,
-                    ttl_seconds=active_settings.contract_api_nonce_ttl_seconds,
-                ),
-                qps_limiter=SlidingWindowQps(redis_client),
+                nonce_guard=nonce_guard,
+                qps_limiter=qps_limiter,
                 concurrency_limiter=ConcurrencyLimiter(
                     redis_client,
                     lease_seconds=active_settings.contract_api_concurrency_lease_seconds,
@@ -103,6 +106,11 @@ def create_app(
                 openwebui=openwebui_client,
                 global_max_output_tokens=active_settings.contract_api_max_output_tokens,
                 heartbeat_interval_seconds=active_settings.contract_api_concurrency_heartbeat_seconds,
+            )
+            app.state.external_metadata_service = ExternalMetadataService(
+                sessions=database_runtime.sessions,
+                nonce_guard=nonce_guard,
+                qps_limiter=qps_limiter,
             )
             if bifrost_preflight is None:
                 app.state.bifrost_preflight = await verify_bifrost_preflight(
