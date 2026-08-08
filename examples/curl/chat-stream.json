@@ -1,0 +1,11 @@
+{
+  "model": "replace-with-allowed-model",
+  "messages": [
+    {
+      "role": "user",
+      "content": "hello"
+    }
+  ],
+  "stream": true,
+  "max_tokens": 256
+}

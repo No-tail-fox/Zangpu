@@ -11,6 +11,8 @@ The current scaffold selects dependencies with commercially usable upstream term
 | Psycopg, psycopg-binary | LGPL-3.0-only | PostgreSQL driver |
 | cryptography 44.0.0 | Apache-2.0 OR BSD-3-Clause | AES-256-GCM caller credential protection |
 | redis-py | MIT | Async Redis-compatible client |
+| httpx | BSD-3-Clause | Python SDK runtime |
+| hatchling | MIT | Python SDK build-only backend |
 | fakeredis / lupa / sortedcontainers | BSD / MIT-style / Apache-2.0 | Development-only atomic Lua verification |
 | Svelte, SvelteKit, Lucide | MIT / ISC | Operator site |
 | PostgreSQL | PostgreSQL License | Durable control-plane truth |

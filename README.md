@@ -22,6 +22,10 @@ Create a local backend environment file outside version control with all `ZANGPU
 pnpm --dir web dev
 ```
 
+## API SDK/cURL
+
+The installable Python SDK, executable PowerShell `curl.exe` signer and Chinese integration guidance are documented in [`docs/api-sdk.md`](docs/api-sdk.md). Examples cover caller-scoped models, usage, JSON chat and SSE chat without embedding credentials or automatically retrying inference.
+
 ## Database Migrations
 
 Alembic fails closed unless `sqlalchemy.url` or `ZANGPU_DATABASE_URL` is supplied. Apply the standalone control-plane schema with:
