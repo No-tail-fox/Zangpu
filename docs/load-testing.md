@@ -61,4 +61,4 @@ $env:ZANGPU_LOAD_MAX_TOKENS = "64"
 
 每次真实验收都应从 [result-template.md](../load/k6/result-template.md) 复制一份报告，填写环境版本、请求档位、调用方限制、P95、失败率、4xx/5xx、dropped iterations 和结论，并引用同次运行的 JSON 文件校验值。
 
-当前仓库可在本地证明同一签名模块能执行并匹配固定 HMAC 向量、主脚本与运行器语法有效、每次迭代从独立执行上下文构造 nonce/request ID，且结果契约不含凭据。当前证据记录在 [2026-08-08-local-delivery-validation.md](../load/k6/results/2026-08-08-local-delivery-validation.md)。真实四服务结果仍需在目标部署环境执行，状态必须保留为“待执行”，直到对应报告和聚合结果完成归档。
+当前仓库已使用官方签名的 k6 v2.1.0 完成真实 HTTP 回环：同一签名模块匹配固定 HMAC 向量，三次请求的 nonce/request ID 均唯一，脱敏 JSON/text 汇总通过。当前二进制版本、哈希和证据记录在 [2026-08-08-local-delivery-validation.md](../load/k6/results/2026-08-08-local-delivery-validation.md)。真实四服务结果仍需在目标部署环境执行，状态必须保留为“待执行”，直到对应报告和聚合结果完成归档。
