@@ -26,6 +26,10 @@ pnpm --dir web dev
 
 The installable Python SDK, executable PowerShell `curl.exe` signer and Chinese integration guidance are documented in [`docs/api-sdk.md`](docs/api-sdk.md). Examples cover caller-scoped models, usage, JSON chat and SSE chat without embedding credentials or automatically retrying inference.
 
+## Load Acceptance
+
+The dependency-free signed k6 script, PowerShell runner, configurable smoke/steady/burst profiles and Chinese result workflow are documented in [`docs/load-testing.md`](docs/load-testing.md). Metadata load is the safe default; chat load requires explicit credit-spend confirmation. Generated summaries are aggregate-only and belong under the ignored `.tmp/k6-results` directory.
+
 ## Database Migrations
 
 Alembic fails closed unless `sqlalchemy.url` or `ZANGPU_DATABASE_URL` is supplied. Apply the standalone control-plane schema with:
@@ -47,4 +51,4 @@ Distributed-control defaults are a 300-second timestamp tolerance, 600-second no
 
 `GET /api/v1/external/models` and `GET /api/v1/external/usage` use the same empty-body HMAC contract, nonce protection and caller QPS window. They require `models.read` and `usage.read` respectively. Models are limited to the caller's configured allow-list; usage reports only the current caller's UTC-daily and lifetime SQL quota counters and limits. The usage response does not expose or duplicate the Open WebUI credit balance. Query parameters and GET bodies are rejected.
 
-Tasks 0-8 now cover the service boundary, persistence, HMAC credentials, Redis admission, private Bifrost binding, Open WebUI credit integration, durable JSON/SSE chat lifecycles and signed caller metadata. A bounded `ExternalChatRecoveryWorker.run_once()` must be scheduled by deployment operations; it reconciles stale pending operations through Open WebUI status/settle/cancel only and never replays Bifrost. The administrator site, SDK/cURL delivery and k6 acceptance remain later scoped tasks. Real PostgreSQL, Valkey, Open WebUI and Bifrost execution remains a deployment gate because Docker is unavailable on this workstation.
+Tasks 0-10 now cover the service boundary, persistence, HMAC credentials, Redis admission, private Bifrost binding, Open WebUI credit integration, durable JSON/SSE chat lifecycles, signed caller metadata, SDK/cURL delivery and k6 load-acceptance tooling. A bounded `ExternalChatRecoveryWorker.run_once()` must be scheduled by deployment operations; it reconciles stale pending operations through Open WebUI status/settle/cancel only and never replays Bifrost. Real PostgreSQL, Valkey, Open WebUI and Bifrost execution, including the final performance report, remains a deployment gate because Docker is unavailable on this workstation.
