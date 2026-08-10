@@ -48,7 +48,15 @@ The Alembic chain has one head and is verified by clean SQLite upgrade, metadata
 
 Task 2 implements the frozen HMAC v1 canonical request over method, normalized RFC 3986 path/query, raw-body SHA-256, public Key ID, timestamp, nonce and request ID. Raw ASGI headers are parsed directly so signed duplicates cannot be collapsed. Known credential signatures use constant-time comparison; malformed headers, unknown/revoked/expired credentials, clock skew, decryption failures and bad signatures expose one `401 AUTH_FAILED` response.
 
-Caller Secrets are generated with high entropy and can be consumed once by the future creation route. Only AES-256-GCM ciphertext, a 96-bit nonce, key version and SHA-256 fingerprint enter PostgreSQL. Encryption AAD binds credential ID, caller ID, public Key ID and master-key version; unavailable versions, modified AAD and tampering fail closed. A valid caller signature is required before a disabled caller receives the stable `403 CLIENT_DISABLED` response.
+Caller Secrets are generated with high entropy and can be consumed once by the administrator creation or rotation route. Only AES-256-GCM ciphertext, a 96-bit nonce, key version and SHA-256 fingerprint enter PostgreSQL. Encryption AAD binds credential ID, caller ID, public Key ID and master-key version; unavailable versions, modified AAD and tampering fail closed. A valid caller signature is required before a disabled caller receives the stable `403 CLIENT_DISABLED` response.
+
+## Administrator Control Surface
+
+The administrator surface is independent from caller HMAC authentication. A deployment-only bootstrap token issues a bounded `zpa1` HMAC-signed `HttpOnly` session Cookie; state-changing requests also require the session-bound CSRF token. Production startup fails closed when the bootstrap token is missing, and the login token is never returned as session material.
+
+Caller creation writes the caller policy, one protected external credential, one pending service-user/Bifrost binding, an immutable administrator audit and a Bifrost outbox item in one SQL transaction. The caller Secret is consumed once by the response. Credential rotation revokes active predecessors and returns one new Secret; explicit revoke affects one credential; caller disable revokes all active credentials locally before remote Bifrost disable reconciliation.
+
+Permission and quota changes require the current caller version. Omitted fields remain unchanged, while explicit null values remove nullable daily/lifetime ceilings. List and detail projections omit caller ciphertext, nonce, fingerprint, key versions and Bifrost material. Open WebUI remains the only credit authority and is not read or mutated by administrator caller metadata operations.
 
 ## Distributed Admission
 

@@ -26,6 +26,10 @@ pnpm --dir web dev
 
 The installable Python SDK, executable PowerShell `curl.exe` signer and Chinese integration guidance are documented in [`docs/api-sdk.md`](docs/api-sdk.md). Examples cover caller-scoped models, usage, JSON chat and SSE chat without embedding credentials or automatically retrying inference.
 
+## Administrator API
+
+The independent administrator session, caller/credential lifecycle, permission/quota updates and Bifrost outbox semantics are documented in [`docs/admin-api.md`](docs/admin-api.md). Production requires separate `ADMIN_SESSION_SECRET` and `ADMIN_LOGIN_TOKEN` values. Caller Secrets are returned once and never appear in list/detail responses.
+
 ## Load Acceptance
 
 The dependency-free signed k6 script, PowerShell runner, configurable smoke/steady/burst profiles and Chinese result workflow are documented in [`docs/load-testing.md`](docs/load-testing.md). Metadata load is the safe default; chat load requires explicit credit-spend confirmation. Generated summaries are aggregate-only and belong under the ignored `.tmp/k6-results` directory.

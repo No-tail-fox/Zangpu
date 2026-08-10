@@ -29,6 +29,7 @@ def configure_required_environment(monkeypatch: pytest.MonkeyPatch) -> dict[str,
         "ZANGPU_OPENWEBUI_INTERNAL_SERVICE_ID": "zangpu-api-control-plane",
         "ZANGPU_OPENWEBUI_INTERNAL_SERVICE_SECRET": "openwebui-internal-secret-redaction-sentinel",
         "ZANGPU_ADMIN_SESSION_SECRET": "admin-session-secret-that-is-at-least-32-bytes",
+        "ZANGPU_ADMIN_LOGIN_TOKEN": "admin-login-token-that-is-at-least-32-bytes",
         "ZANGPU_API_CREDENTIAL_KEYS": json.dumps(
             {"v1": base64.b64encode(bytes(32)).decode("ascii")}, separators=(",", ":")
         ),
@@ -56,9 +57,24 @@ def test_secret_settings_are_redacted_from_repr_and_model_dumps(monkeypatch: pyt
 
     rendered = "\n".join((repr(settings), repr(settings.model_dump()), settings.model_dump_json()))
     assert values["ZANGPU_ADMIN_SESSION_SECRET"] not in rendered
+    assert values["ZANGPU_ADMIN_LOGIN_TOKEN"] not in rendered
     assert values["ZANGPU_API_CREDENTIAL_KEYS"] not in rendered
     assert values["ZANGPU_BIFROST_MANAGEMENT_TOKEN"] not in rendered
     assert values["ZANGPU_OPENWEBUI_INTERNAL_SERVICE_SECRET"] not in rendered
+
+
+def test_production_requires_separate_admin_login_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    configure_required_environment(monkeypatch)
+    monkeypatch.setenv("ZANGPU_ENVIRONMENT", "production")
+    monkeypatch.delenv("ZANGPU_ADMIN_LOGIN_TOKEN")
+    settings_module = import_module("backend.app.settings")
+
+    with pytest.raises(ValidationError, match="administrator login token"):
+        settings_module.Settings(_env_file=None)
+
+    monkeypatch.setenv("ZANGPU_ADMIN_LOGIN_TOKEN", "admin-session-secret-that-is-at-least-32-bytes")
+    with pytest.raises(ValidationError, match="must be different"):
+        settings_module.Settings(_env_file=None)
 
 
 def test_invalid_credential_keyring_fails_startup(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -140,11 +156,18 @@ def test_compose_publishes_only_gateway_ports() -> None:
     assert "OPENWEBUI_INTERNAL_SERVICE_ID" in backend_environment["ZANGPU_OPENWEBUI_INTERNAL_SERVICE_ID"]
     assert "OPENWEBUI_INTERNAL_SERVICE_SECRET" in backend_environment["ZANGPU_OPENWEBUI_INTERNAL_SERVICE_SECRET"]
     assert backend_environment["ZANGPU_CONTRACT_API_MAX_OUTPUT_TOKENS"] == "${CONTRACT_API_MAX_OUTPUT_TOKENS:-4096}"
+    assert "ADMIN_LOGIN_TOKEN" in backend_environment["ZANGPU_ADMIN_LOGIN_TOKEN"]
     assert "openwebui" not in services
 
     published_targets = {port["target"] for port in services["gateway"]["ports"]}
     assert published_targets == {9000, 9001}
     assert all(port["host_ip"] == "127.0.0.1" for port in services["gateway"]["ports"])
+
+    caddy = (ROOT / "deploy" / "Caddyfile").read_text(encoding="utf-8")
+    admin_proxy = caddy.index("handle /api/v1/admin/*")
+    backend_proxy = caddy.index("reverse_proxy backend:9000", admin_proxy)
+    web_fallback = caddy.index("reverse_proxy web:3000", backend_proxy)
+    assert admin_proxy < backend_proxy < web_fallback
 
 
 def test_docker_context_excludes_local_dependency_and_build_artifacts() -> None:

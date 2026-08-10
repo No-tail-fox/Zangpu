@@ -8,5 +8,11 @@
 }
 
 :9001 {
-  reverse_proxy web:3000
+  handle /api/v1/admin/* {
+    reverse_proxy backend:9000
+  }
+
+  handle {
+    reverse_proxy web:3000
+  }
 }

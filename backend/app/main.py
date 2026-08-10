@@ -2,8 +2,11 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
+from backend.app.api.admin import AdminApiError, admin_error_response
+from backend.app.api.admin import router as admin_router
 from backend.app.api.external import router as external_router
 from backend.app.database import DatabaseRuntime, create_database_runtime
 from backend.app.integrations.bifrost.client import BifrostClient
@@ -13,8 +16,10 @@ from backend.app.limits.concurrency import ConcurrencyLimiter
 from backend.app.limits.nonce import NonceGuard
 from backend.app.limits.qps import SlidingWindowQps
 from backend.app.limits.redis import create_redis_client
+from backend.app.security.admin import AdminSessionManager
 from backend.app.security.dependencies import ExternalAuthenticator
 from backend.app.security.keyring import CredentialKeyring
+from backend.app.services.admin import AdminCallerService
 from backend.app.services.callers import DatabaseCredentialResolver
 from backend.app.services.chat import ExternalChatService
 from backend.app.services.metadata import ExternalMetadataService
@@ -73,6 +78,12 @@ def create_app(
         database_runtime = database_factory(active_settings)
         app.state.database = database_runtime
         app.state.session_factory = database_runtime.sessions
+        app.state.admin_sessions = AdminSessionManager(
+            session_secret=active_settings.admin_session_secret,
+            bootstrap_token=active_settings.admin_login_token,
+            ttl_seconds=active_settings.admin_session_ttl_seconds,
+        )
+        app.state.admin_callers = AdminCallerService(database_runtime.sessions, app.state.credential_keyring)
         redis_client = None
         bifrost_client: BifrostClient | None = None
         openwebui_client: OpenWebUIClient | None = None
@@ -145,6 +156,11 @@ def create_app(
         openapi_url=None,
     )
     application.include_router(external_router)
+    application.include_router(admin_router)
+
+    @application.exception_handler(AdminApiError)
+    async def handle_admin_api_error(_request: Request, exc: AdminApiError) -> JSONResponse:
+        return admin_error_response(exc)
 
     @application.get("/api/v1/external/health", response_model=HealthResponse)
     async def health(request: Request) -> HealthResponse:

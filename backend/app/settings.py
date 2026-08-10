@@ -33,6 +33,8 @@ class Settings(BaseSettings):
     openwebui_internal_service_secret: BoundedSecret
     openwebui_internal_timeout_seconds: float = Field(default=10.0, ge=1.0, le=30.0)
     admin_session_secret: BoundedSecret
+    admin_login_token: BoundedSecret | None = None
+    admin_session_ttl_seconds: int = Field(default=3600, ge=300, le=86_400)
     api_credential_keys: CredentialKeys
     api_credential_active_key_id: str = Field(pattern=r"^[A-Za-z0-9._-]{1,64}$")
     contract_api_timestamp_tolerance_seconds: int = Field(default=300, ge=30, le=900)
@@ -54,6 +56,13 @@ class Settings(BaseSettings):
             raise ValueError("concurrency heartbeat must be less than half the lease")
         if self.outbox_max_retry_seconds < self.outbox_base_retry_seconds:
             raise ValueError("outbox maximum retry delay must not be below its base delay")
+        if self.environment == "production" and self.admin_login_token is None:
+            raise ValueError("administrator login token is required in production")
+        if (
+            self.admin_login_token is not None
+            and self.admin_login_token.get_secret_value() == self.admin_session_secret.get_secret_value()
+        ):
+            raise ValueError("administrator login and session Secrets must be different")
         return self
 
 
