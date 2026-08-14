@@ -34,6 +34,9 @@
 | `POST` | `/api/v1/admin/callers/{client_id}/credentials/rotate` | 轮换凭据并撤销旧凭据 |
 | `POST` | `/api/v1/admin/callers/{client_id}/credentials/{credential_id}/revoke` | 单独撤销凭据 |
 | `POST` | `/api/v1/admin/callers/{client_id}/disable` | 本地禁用、撤销全部凭据并排队禁用 Bifrost Key |
+| `GET` | `/api/v1/admin/events` | 筛选并分页读取不可变终态调用事件 |
+| `GET` | `/api/v1/admin/events/summary` | 汇总请求、Token、计费、耗时百分位和 UTC 趋势 |
+| `POST` | `/api/v1/admin/events/export` | 按当前筛选导出受限的安全 CSV，并写管理员审计 |
 
 创建与禁用请求必须携带 8 至 128 字符的 `Idempotency-Key`。更新请求必须携带当前 `expected_version`；版本过期返回 `409 ADMIN_CALLER_CONFLICT`，避免覆盖其他管理员刚完成的变更。
 
@@ -74,3 +77,20 @@
 管理员审计只记录操作人、目标、动作、变更字段和脱敏前后摘要。它不记录登录令牌、会话 Cookie、CSRF Token、caller Secret、Bifrost Key、签名、nonce、请求正文或原始上游错误。
 
 Open WebUI 仍是积分余额和流水的唯一权威；管理员 caller API 不读取或修改积分表。
+
+## 调用事件、统计和导出
+
+三个事件接口共用以下可选查询参数：
+
+- `api_client_id`：调用方 ID。
+- `created_from`、`created_to`：闭区间的 UTC Unix 秒；起始值不得晚于结束值。
+- `outcome`、`stage`、`http_status`、`business_code`：终态结果、处理阶段、HTTP 状态码和稳定业务码。
+- `endpoint`、`model_id`、`stream`：端点、模型和流式调用标记。
+
+`GET /events` 还接受 `offset` 和 `limit`，其中单页最多 200 条。结果按 `created_at`、`id` 稳定倒序，并返回筛选后的 `total`。所有读取响应都带 `Cache-Control: no-store`。
+
+`GET /events/summary` 的 `bucket_seconds` 只接受 `300`、`3600` 或 `86400`，按 UTC Unix 时间对齐趋势桶。汇总包括请求成功/失败数、Token、计费微单位、平均耗时、配额超限数以及 P50/P95/P99。百分位固定使用 nearest-rank：对排序后的 `n` 个耗时取 `ceil(p*n)`，并夹在首尾有效下标内。精确汇总最多处理 100,000 条事件；超出时返回 `422 ADMIN_OBSERVABILITY_LIMIT`，不抽样、不返回近似结果。
+
+`POST /events/export` 属于写操作，除管理员 Cookie 外必须携带当前 `X-Zangpu-CSRF`。CSV 最多导出 10,000 条；超出时返回 `422 ADMIN_OBSERVABILITY_LIMIT`，要求缩小筛选范围。导出成功会写入不可变 `events.exported` 管理员审计。
+
+CSV 仅包含终态事件的安全元数据。字符串中的 CR/LF/制表符会被替换；忽略前导空白后以 `=`、`+`、`-` 或 `@` 开头的值会加单引号，避免电子表格公式注入。导出不包含请求正文、prompt、answer、Secret、签名、nonce、原始 IP 或上游原始错误；`remote_ip_hash` 仍只是不可逆哈希。调用记录和聚合只读取控制面事件，不调用 Open WebUI、Bifrost，也不建立第二套积分余额。

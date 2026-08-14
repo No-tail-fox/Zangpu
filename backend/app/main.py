@@ -23,6 +23,7 @@ from backend.app.services.admin import AdminCallerService
 from backend.app.services.callers import DatabaseCredentialResolver
 from backend.app.services.chat import ExternalChatService
 from backend.app.services.metadata import ExternalMetadataService
+from backend.app.services.observability import AdminObservabilityService
 from backend.app.settings import Settings, load_settings
 
 SERVICE_NAME = "zangpu-api-control-plane"
@@ -84,6 +85,7 @@ def create_app(
             ttl_seconds=active_settings.admin_session_ttl_seconds,
         )
         app.state.admin_callers = AdminCallerService(database_runtime.sessions, app.state.credential_keyring)
+        app.state.admin_observability = AdminObservabilityService(database_runtime.sessions)
         redis_client = None
         bifrost_client: BifrostClient | None = None
         openwebui_client: OpenWebUIClient | None = None

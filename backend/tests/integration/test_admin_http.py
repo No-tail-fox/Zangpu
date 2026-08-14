@@ -15,6 +15,8 @@ from backend.app.integrations.openwebui.client import OpenWebUIClient
 from backend.app.main import create_app
 from backend.app.models import Base
 from backend.app.models.credentials import ApiClientCredential
+from backend.app.models.events import ApiCallEvent
+from backend.app.services.observability import AdminObservabilityService
 from backend.app.settings import Settings
 
 
@@ -68,8 +70,7 @@ def caller_payload() -> dict[str, object]:
     }
 
 
-def test_admin_http_session_and_caller_lifecycle(monkeypatch: pytest.MonkeyPatch) -> None:
-    database, keys = runtime()
+def build_application(monkeypatch: pytest.MonkeyPatch, database: DatabaseRuntime, keys: str):
     redis = FakeRedis()
     monkeypatch.setattr("backend.app.main.create_redis_client", lambda _url: redis)
 
@@ -79,7 +80,7 @@ def test_admin_http_session_and_caller_lifecycle(monkeypatch: pytest.MonkeyPatch
     def no_remote_request(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(500, json={"unused": True})
 
-    application = create_app(
+    return create_app(
         settings(keys),
         database_factory=lambda _settings: database,
         bifrost_client_factory=lambda active: BifrostClient(
@@ -95,6 +96,56 @@ def test_admin_http_session_and_caller_lifecycle(monkeypatch: pytest.MonkeyPatch
             transport=httpx.MockTransport(no_remote_request),
         ),
     )
+
+
+def terminal_event(
+    event_id: str,
+    *,
+    client_id: str,
+    created_at: int,
+    outcome: str = "success",
+    model_id: str = "model-1",
+) -> ApiCallEvent:
+    success = outcome == "success"
+    return ApiCallEvent(
+        id=event_id,
+        server_request_id=f"server-{event_id}",
+        client_request_id=f"client-{event_id}",
+        operation_id=None,
+        api_client_id=client_id,
+        credential_id=None,
+        endpoint="chat.completions",
+        method="POST",
+        model_id=model_id,
+        stream=False,
+        outcome=outcome,
+        stage="response" if success else "quota",
+        http_status=200 if success else 429,
+        business_code="OK" if success else "DAILY_REQUEST_QUOTA_EXCEEDED",
+        retryable=not success,
+        duration_ms=10 if success else 20,
+        quota_overrun=not success,
+        prompt_tokens=5 if success else 0,
+        completion_tokens=5 if success else 0,
+        total_tokens=10 if success else 0,
+        charged_micro=5 if success else 0,
+        qps_observed=1,
+        concurrency_observed=1,
+        daily_requests_after=1,
+        daily_tokens_after=10 if success else 0,
+        total_requests_after=1,
+        total_tokens_after=10 if success else 0,
+        remote_ip_hash="a" * 64,
+        user_agent_family="SDK",
+        started_at=created_at,
+        completed_at=created_at + 1,
+        created_at=created_at,
+    )
+
+
+def test_admin_http_session_and_caller_lifecycle(monkeypatch: pytest.MonkeyPatch) -> None:
+    database, keys = runtime()
+    application = build_application(monkeypatch, database, keys)
 
     with TestClient(application) as client:
         assert client.get("/api/v1/admin/callers").status_code == 401
@@ -180,3 +231,79 @@ def test_admin_http_session_and_caller_lifecycle(monkeypatch: pytest.MonkeyPatch
     assert revoked.status_code == 200 and revoked.json()["status"] == "revoked"
     assert disabled.status_code == 200 and disabled.json()["client"]["status"] == "disabled"
     assert len(credentials) == 2 and {item.status for item in credentials} == {"revoked"}
+
+
+def test_admin_http_observability_is_authenticated_bounded_and_csv_safe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database, keys = runtime()
+    application = build_application(monkeypatch, database, keys)
+
+    with TestClient(application) as client:
+        unauthenticated = client.get("/api/v1/admin/events")
+        login = client.post(
+            "/api/v1/admin/session",
+            headers={"x-zangpu-admin-token": "admin-login-token-that-is-at-least-32-bytes"},
+        )
+        csrf = login.json()["csrf_token"]
+        created = client.post(
+            "/api/v1/admin/callers",
+            headers={"x-zangpu-csrf": csrf, "idempotency-key": "http-events-create-1"},
+            json=caller_payload(),
+        )
+        client_id = created.json()["client"]["id"]
+        with database.sessions.begin() as session:
+            session.add_all(
+                (
+                    terminal_event("event-http-1", client_id=client_id, created_at=3_600),
+                    terminal_event(
+                        "event-http-2",
+                        client_id=client_id,
+                        created_at=7_200,
+                        outcome="rejected",
+                        model_id="=SUM(1,1)",
+                    ),
+                )
+            )
+
+        listed = client.get(f"/api/v1/admin/events?api_client_id={client_id}&limit=1")
+        summary = client.get("/api/v1/admin/events/summary?bucket_seconds=3600")
+        invalid_range = client.get("/api/v1/admin/events?created_from=7200&created_to=3600")
+        invalid_bucket = client.get("/api/v1/admin/events/summary?bucket_seconds=600")
+        export_without_csrf = client.post("/api/v1/admin/events/export")
+        exported = client.post("/api/v1/admin/events/export", headers={"x-zangpu-csrf": csrf})
+
+        application.state.admin_observability = AdminObservabilityService(
+            database.sessions,
+            max_export_rows=1,
+            max_aggregate_rows=1,
+        )
+        broad_summary = client.get("/api/v1/admin/events/summary")
+        broad_export = client.post("/api/v1/admin/events/export", headers={"x-zangpu-csrf": csrf})
+
+    assert (unauthenticated.status_code, unauthenticated.json()["error"]["code"]) == (
+        401,
+        "ADMIN_AUTH_REQUIRED",
+    )
+    assert listed.status_code == 200
+    assert listed.json()["total"] == 2 and listed.json()["items"][0]["id"] == "event-http-2"
+    assert summary.status_code == 200
+    assert (summary.json()["request_count"], summary.json()["quota_overrun_count"]) == (2, 1)
+    assert (invalid_range.status_code, invalid_range.json()["error"]["code"]) == (422, "ADMIN_INVALID_FILTER")
+    assert (invalid_bucket.status_code, invalid_bucket.json()["error"]["code"]) == (422, "ADMIN_INVALID_FILTER")
+    assert (export_without_csrf.status_code, export_without_csrf.json()["error"]["code"]) == (
+        403,
+        "ADMIN_CSRF_FAILED",
+    )
+    assert exported.status_code == 200 and exported.headers["content-type"].startswith("text/csv")
+    assert "attachment;" in exported.headers["content-disposition"]
+    assert "'=SUM(1,1)" in exported.text
+    assert "prompt" not in exported.text.lower()
+    assert (broad_summary.status_code, broad_summary.json()["error"]["code"]) == (
+        422,
+        "ADMIN_OBSERVABILITY_LIMIT",
+    )
+    assert (broad_export.status_code, broad_export.json()["error"]["code"]) == (
+        422,
+        "ADMIN_OBSERVABILITY_LIMIT",
+    )

@@ -7,7 +7,8 @@ from typing import Annotated
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
+from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 
 from backend.app.security.admin import AdminSessionClaims, AdminSessionError, AdminSessionManager
@@ -17,6 +18,11 @@ from backend.app.services.admin import (
     AdminCallerPatchRequest,
     AdminCallerService,
     AdminCallerStateError,
+)
+from backend.app.services.observability import (
+    AdminEventQuery,
+    AdminObservabilityLimitError,
+    AdminObservabilityService,
 )
 
 ADMIN_SESSION_COOKIE = "zangpu_admin_session"
@@ -65,6 +71,39 @@ def require_admin_write(
 
 def _service(request: Request) -> AdminCallerService:
     return request.app.state.admin_callers
+
+
+def _observability_service(request: Request) -> AdminObservabilityService:
+    return request.app.state.admin_observability
+
+
+def read_admin_event_query(
+    api_client_id: Annotated[str | None, Query(min_length=1, max_length=36)] = None,
+    created_from: Annotated[int | None, Query(ge=0)] = None,
+    created_to: Annotated[int | None, Query(ge=0)] = None,
+    outcome: Annotated[str | None, Query(max_length=24)] = None,
+    stage: Annotated[str | None, Query(max_length=24)] = None,
+    http_status: Annotated[int | None, Query(ge=100, le=599)] = None,
+    business_code: Annotated[str | None, Query(min_length=1, max_length=64)] = None,
+    endpoint: Annotated[str | None, Query(min_length=1, max_length=64)] = None,
+    model_id: Annotated[str | None, Query(min_length=1, max_length=255)] = None,
+    stream: bool | None = None,
+) -> AdminEventQuery:
+    try:
+        return AdminEventQuery(
+            api_client_id=api_client_id,
+            created_from=created_from,
+            created_to=created_to,
+            outcome=outcome,
+            stage=stage,
+            http_status=http_status,
+            business_code=business_code,
+            endpoint=endpoint,
+            model_id=model_id,
+            stream=stream,
+        )
+    except ValidationError as exc:
+        raise AdminApiError("ADMIN_INVALID_FILTER", 422, "Administrator event filters are invalid.") from exc
 
 
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
@@ -124,6 +163,77 @@ async def list_callers(
     return JSONResponse(
         content={"items": [item.model_dump(mode="json") for item in items], "offset": offset, "limit": limit},
         headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.get("/events")
+async def list_events(
+    request: Request,
+    _claims: Annotated[AdminSessionClaims, Depends(require_admin_session)],
+    event_query: Annotated[AdminEventQuery, Depends(read_admin_event_query)],
+    offset: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> JSONResponse:
+    page = await asyncio.to_thread(
+        _observability_service(request).list_events,
+        event_query,
+        offset=offset,
+        limit=limit,
+    )
+    return JSONResponse(content=page.model_dump(mode="json"), headers={"Cache-Control": "no-store"})
+
+
+@router.get("/events/summary")
+async def summarize_events(
+    request: Request,
+    _claims: Annotated[AdminSessionClaims, Depends(require_admin_session)],
+    event_query: Annotated[AdminEventQuery, Depends(read_admin_event_query)],
+    bucket_seconds: Annotated[int, Query(ge=1)] = 3_600,
+) -> JSONResponse:
+    try:
+        summary = await asyncio.to_thread(
+            _observability_service(request).summarize,
+            event_query,
+            bucket_seconds=bucket_seconds,
+        )
+    except AdminObservabilityLimitError as exc:
+        raise AdminApiError(
+            "ADMIN_OBSERVABILITY_LIMIT",
+            422,
+            "Event query is too broad; narrow the filters.",
+        ) from exc
+    except ValueError as exc:
+        raise AdminApiError("ADMIN_INVALID_FILTER", 422, "Administrator event filters are invalid.") from exc
+    return JSONResponse(content=summary.model_dump(mode="json"), headers={"Cache-Control": "no-store"})
+
+
+@router.post("/events/export")
+async def export_events(
+    request: Request,
+    claims: Annotated[AdminSessionClaims, Depends(require_admin_write)],
+    event_query: Annotated[AdminEventQuery, Depends(read_admin_event_query)],
+) -> Response:
+    try:
+        exported = await asyncio.to_thread(
+            _observability_service(request).export_csv,
+            event_query,
+            actor_id=claims.actor_id,
+            now=int(time()),
+        )
+    except AdminObservabilityLimitError as exc:
+        raise AdminApiError(
+            "ADMIN_OBSERVABILITY_LIMIT",
+            422,
+            "Event export is too broad; narrow the filters.",
+        ) from exc
+    return Response(
+        content=exported.content,
+        media_type="text/csv",
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Disposition": f'attachment; filename="{exported.filename}"',
+            "X-Zangpu-Export-Rows": str(exported.row_count),
+        },
     )
 
 
