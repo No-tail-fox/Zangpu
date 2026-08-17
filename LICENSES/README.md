@@ -13,6 +13,7 @@ The current scaffold selects dependencies with commercially usable upstream term
 | redis-py | MIT | Async Redis-compatible client |
 | httpx | BSD-3-Clause | Python SDK runtime |
 | hatchling | MIT | Python SDK build-only backend |
+| Node.js 20+ built-in APIs | MIT | External JavaScript SDK runtime; not bundled by this repository |
 | fakeredis / lupa / sortedcontainers | BSD / MIT-style / Apache-2.0 | Development-only atomic Lua verification |
 | Svelte, SvelteKit, Lucide | MIT / ISC | Operator site |
 | PostgreSQL | PostgreSQL License | Durable control-plane truth |

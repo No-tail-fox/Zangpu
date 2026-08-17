@@ -1,6 +1,6 @@
 # 合同功能覆盖矩阵
 
-更新时间：2026-08-10
+更新时间：2026-08-17
 权威范围：`openwebui-commercial-fork/docs/plans/2026-07-13-contract-delivery-master-plan.md`。该文件说明其内容源自 2026-06-23 合同；签署版 DOCX/PDF 当前不在工作区，因此本矩阵不替代正式合同原件或最终验收签字。
 
 ## 状态定义
@@ -26,7 +26,7 @@
 | QPS、并发、每日/总请求和 Token 配额 | 已验证 API/缺失 UI | `bdef47e`、`c910df1`、`dca1b13`；管理员版本化 quota update | 运行时、k6 loopback、显式 null 和版本冲突通过；无管理员配置页 | 在管理页提供限制值、无限制状态、校验和保存反馈 |
 | 调用方模型/端点权限隔离 | 已验证 API/缺失 UI | `ApiClient.allowed_models/allowed_endpoints`、metadata/chat policy、管理员版本化 policy update | caller isolation、signed `/models`/`/usage` 和管理更新通过；无管理页 | 管理页提供端点/模型多选，并提示当前 Bifrost 单初始模型限制 |
 | JSON/SSE REST API、统一错误、版本化 | 已验证 | `c910df1`、`dca1b13`、`2dc7bee` | backend `155 passed` 基线、signed HTTP 和 SSE 合同通过 | 生成/补齐面向客户的 OpenAPI/API 文档和部署 smoke |
-| Python SDK、PowerShell/cURL、示例 | 已验证（范围有限） | `e44198c`、`docs/api-sdk.md`、`examples/` | SDK/cURL focused `11/11`，wheel import 和 loopback 签名通过 | 补 JavaScript SDK/示例与 CI smoke；不把正式长期 SDK 维护外推为已交付 |
+| Python/JavaScript SDK、PowerShell/cURL、示例 | 已验证（范围有限） | `e44198c`、`sdk/python`、`sdk/javascript`、`docs/api-sdk.md`、`examples/` | Python SDK/cURL 已验证；Node 20+ SDK `11/11`、类型声明、7 文件包内容和脱敏部署 smoke 合同通过，真实远端 smoke 未运行 | 在部署环境执行 health/models/usage smoke；不把正式长期 SDK 维护外推为已交付 |
 | API 调用记录、异常、统计和监控趋势 | 已验证 API/缺失 UI | `ApiCallEvent`、`AdminObservabilityService`、`RetentionService`、管理员 events/summary/export/retention 路由及不可变审计 | 筛选分页、精确 P50/P95/P99、UTC 趋势、受限 CSV、固定策略预览和有界清理已通过服务/HTTP/迁移合同；无管理页面，真实 PostgreSQL 数据量、调度、vacuum 和备份联动未验证 | 经截图审查后接入记录/趋势/保留期页；部署环境验证索引计划、批处理调度和恢复流程 |
 | k6 基础压测脚本和结果记录 | 已验证工具/外部阻塞容量结论 | `4011e62`、`f6df0e4`、`docs/load-testing.md` | 官方 k6 v2.1.0 loopback `4/4`；三次真实签名请求通过 | 在部署环境跑 PostgreSQL/Valkey/Open WebUI/Bifrost smoke/steady/burst，形成 P50/P95/P99 与容量结论 |
 | 模型部署、GPU、真实 Provider | 外部阻塞 | Bifrost typed client/preflight、内部模型路由 | loopback Bifrost v1.6.3 PoC 通过；无甲方 GPU/模型部署证据 | 甲方提供资源后做部署、超时、真实模型和容量验收 |

@@ -1,0 +1,29 @@
+{
+  "name": "@zangpu/sdk",
+  "version": "0.1.0",
+  "description": "Server-side signed JavaScript client for the Zangpu contract API",
+  "type": "module",
+  "main": "./src/index.js",
+  "types": "./src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "node": "./src/index.js"
+    }
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test test",
+    "pack:check": "npm pack --dry-run"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "browser": false,
+  "sideEffects": false,
+  "license": "UNLICENSED",
+  "dependencies": {}
+}

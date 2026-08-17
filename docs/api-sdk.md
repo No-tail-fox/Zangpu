@@ -60,6 +60,50 @@ with ZangpuClient(
 
 SDK 忽略 SSE 心跳注释，仅返回经过 JSON 校验的 `data:` 事件；如果缺少 `[DONE]`、事件过大、内容类型错误或返回体不是合法协议，会抛出 `ZangpuProtocolError`。HTTP 错误抛出 `ZangpuAPIError`，可读取 `code`、`status_code`、`request_id`、`operation_id` 和 `retryable`，异常中不包含原始响应正文。
 
+## JavaScript SDK
+
+`sdk/javascript` 是无运行时依赖的 Node.js 20+ 服务端 ESM 包，同时提供 `.d.ts` 类型声明。它使用 Node `crypto`、原生 `fetch` 和 WHATWG stream，不是浏览器 SDK；`package.json` 明确设置 `browser: false`。调用方 Secret 只能从服务端进程环境或 Secret 管理器读取，不能进入前端构建、浏览器存储或公开 source map。
+
+仓库内直接运行：
+
+```powershell
+$env:ZANGPU_API_BASE_URL='https://api.example.com'
+$env:ZANGPU_API_KEY_ID='<issued-key-id>'
+$env:ZANGPU_API_SECRET='<load-from-secret-manager>'
+node .\examples\javascript\basic.mjs
+```
+
+代码调用：
+
+```js
+import { ZangpuClient } from "@zangpu/sdk";
+
+const client = new ZangpuClient({
+  baseUrl: process.env.ZANGPU_API_BASE_URL,
+  keyId: process.env.ZANGPU_API_KEY_ID,
+  secret: process.env.ZANGPU_API_SECRET,
+});
+
+const models = await client.listModels();
+const usage = await client.getUsage();
+const result = await client.chatCompletions({
+  model: models.data.data[0].id,
+  messages: [{ role: "user", content: "hello" }],
+  maxTokens: 256,
+  requestId: "req_business_20260817_0001",
+});
+console.log(result.data, result.requestId, usage.data);
+```
+
+流式方法 `streamChatCompletions()` 返回 async generator，忽略 SSE heartbeat，只在收到合法 `data:` JSON 时产生事件，并强制要求最终 `[DONE]`。JavaScript 与 Python SDK 使用相同的 1 MiB 请求、4 MiB JSON 响应和 1 MiB 单 SSE 事件上限；均不自动重试聊天。Node 契约测试与包内容检查分别运行：
+
+```powershell
+npm --prefix .\sdk\javascript test
+npm --prefix .\sdk\javascript run pack:check
+```
+
+低成本部署 smoke 见 [`deployment.md`](deployment.md)，默认只访问 health/models/usage，不调用模型推理。
+
 ## PowerShell 与 cURL
 
 脚本要求 PowerShell 7 和系统 `curl.exe`。它从环境变量读取 Secret，并使用 `curl.exe --data-binary` 发送与签名时完全相同的请求字节：

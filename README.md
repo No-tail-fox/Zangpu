@@ -24,7 +24,7 @@ pnpm --dir web dev
 
 ## API SDK/cURL
 
-The installable Python SDK, executable PowerShell `curl.exe` signer and Chinese integration guidance are documented in [`docs/api-sdk.md`](docs/api-sdk.md). Examples cover caller-scoped models, usage, JSON chat and SSE chat without embedding credentials or automatically retrying inference.
+The installable Python SDK, server-side Node 20+ JavaScript SDK, executable PowerShell `curl.exe` signer and Chinese integration guidance are documented in [`docs/api-sdk.md`](docs/api-sdk.md). Examples cover caller-scoped models, usage, JSON chat and SSE chat without embedding credentials or automatically retrying inference. Deployment preparation and the low-cost health/models/usage smoke are documented in [`docs/deployment.md`](docs/deployment.md).
 
 ## Administrator API
 
