@@ -2,6 +2,8 @@
 
 Independent contract API management service and Chinese operator site for Zangpu. Bifrost remains an internal model gateway, while Open WebUI remains the only credit-balance authority.
 
+The administrator site now provides deployment-token login, caller inventory and creation, one-time Secret delivery, redacted credential rotation/revocation, caller disable, binding-sync visibility, endpoint/model permissions and request/Token quota editing. Browser state keeps only the session-issued CSRF value in memory; it never stores the administrator login token, caller Secret, Bifrost key material or Open WebUI balance.
+
 ## Local Gates
 
 ```powershell
