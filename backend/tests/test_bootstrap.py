@@ -77,6 +77,30 @@ def test_production_requires_separate_admin_login_token(monkeypatch: pytest.Monk
         settings_module.Settings(_env_file=None)
 
 
+def test_retention_settings_are_bounded_and_keep_admin_audit_longer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configure_required_environment(monkeypatch)
+    settings_module = import_module("backend.app.settings")
+    settings = settings_module.Settings(_env_file=None)
+
+    assert (settings.event_retention_days, settings.admin_audit_retention_days) == (180, 730)
+    assert settings.retention_batch_size == 1_000
+
+    monkeypatch.setenv("ZANGPU_EVENT_RETENTION_DAYS", "29")
+    with pytest.raises(ValidationError):
+        settings_module.Settings(_env_file=None)
+    monkeypatch.setenv("ZANGPU_EVENT_RETENTION_DAYS", "400")
+    monkeypatch.setenv("ZANGPU_ADMIN_AUDIT_RETENTION_DAYS", "365")
+    with pytest.raises(ValidationError, match="audit retention"):
+        settings_module.Settings(_env_file=None)
+    monkeypatch.setenv("ZANGPU_EVENT_RETENTION_DAYS", "180")
+    monkeypatch.setenv("ZANGPU_ADMIN_AUDIT_RETENTION_DAYS", "730")
+    monkeypatch.setenv("ZANGPU_RETENTION_BATCH_SIZE", "10001")
+    with pytest.raises(ValidationError):
+        settings_module.Settings(_env_file=None)
+
+
 def test_invalid_credential_keyring_fails_startup(monkeypatch: pytest.MonkeyPatch) -> None:
     configure_required_environment(monkeypatch)
     monkeypatch.setenv("ZANGPU_API_CREDENTIAL_KEYS", "not-json")
@@ -157,6 +181,9 @@ def test_compose_publishes_only_gateway_ports() -> None:
     assert "OPENWEBUI_INTERNAL_SERVICE_SECRET" in backend_environment["ZANGPU_OPENWEBUI_INTERNAL_SERVICE_SECRET"]
     assert backend_environment["ZANGPU_CONTRACT_API_MAX_OUTPUT_TOKENS"] == "${CONTRACT_API_MAX_OUTPUT_TOKENS:-4096}"
     assert "ADMIN_LOGIN_TOKEN" in backend_environment["ZANGPU_ADMIN_LOGIN_TOKEN"]
+    assert backend_environment["ZANGPU_EVENT_RETENTION_DAYS"] == "${EVENT_RETENTION_DAYS:-180}"
+    assert backend_environment["ZANGPU_ADMIN_AUDIT_RETENTION_DAYS"] == "${ADMIN_AUDIT_RETENTION_DAYS:-730}"
+    assert backend_environment["ZANGPU_RETENTION_BATCH_SIZE"] == "${RETENTION_BATCH_SIZE:-1000}"
     assert "openwebui" not in services
 
     published_targets = {port["target"] for port in services["gateway"]["ports"]}

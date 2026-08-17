@@ -40,6 +40,7 @@ class ApiCallEvent(Base):
         CheckConstraint("total_tokens_after >= 0", name="total_tokens_after_nonnegative"),
         CheckConstraint("completed_at >= started_at", name="completion_order"),
         Index("ix_api_call_event_api_client_created", "api_client_id", "created_at", "id"),
+        Index("ix_api_call_event_created", "created_at", "id"),
         Index("ix_api_call_event_credential_id", "credential_id"),
     )
 

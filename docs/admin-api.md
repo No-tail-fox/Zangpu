@@ -8,6 +8,9 @@
 
 - `ADMIN_SESSION_SECRET`：至少 32 字节，仅用于签发 `zpa1` 管理员会话。
 - `ADMIN_LOGIN_TOKEN`：至少 32 字节，仅用于首次登录校验，不作为会话 Cookie。
+- `EVENT_RETENTION_DAYS`：终态调用事件保留天数，默认 180，范围 30 至 3650。
+- `ADMIN_AUDIT_RETENTION_DAYS`：管理员审计保留天数，默认 730，范围 365 至 3650，且不得短于事件保留期。
+- `RETENTION_BATCH_SIZE`：每次对事件表、审计表各自最多删除的行数，默认 1000，范围 1 至 10000。
 
 两个值不得相同，不得写入 Web 构建、浏览器配置、日志或仓库。生产环境缺少 `ADMIN_LOGIN_TOKEN` 时 backend 拒绝启动。外层反向代理负责 TLS、来源网络和额外登录限流。
 
@@ -37,6 +40,8 @@
 | `GET` | `/api/v1/admin/events` | 筛选并分页读取不可变终态调用事件 |
 | `GET` | `/api/v1/admin/events/summary` | 汇总请求、Token、计费、耗时百分位和 UTC 趋势 |
 | `POST` | `/api/v1/admin/events/export` | 按当前筛选导出受限的安全 CSV，并写管理员审计 |
+| `GET` | `/api/v1/admin/retention/preview` | 预览固定策略下的 cutoff、过期总数和下一批数量 |
+| `POST` | `/api/v1/admin/retention/purge` | 按预览快照确认并清理一批过期事件/审计 |
 
 创建与禁用请求必须携带 8 至 128 字符的 `Idempotency-Key`。更新请求必须携带当前 `expected_version`；版本过期返回 `409 ADMIN_CALLER_CONFLICT`，避免覆盖其他管理员刚完成的变更。
 
@@ -94,3 +99,23 @@ Open WebUI 仍是积分余额和流水的唯一权威；管理员 caller API 不
 `POST /events/export` 属于写操作，除管理员 Cookie 外必须携带当前 `X-Zangpu-CSRF`。CSV 最多导出 10,000 条；超出时返回 `422 ADMIN_OBSERVABILITY_LIMIT`，要求缩小筛选范围。导出成功会写入不可变 `events.exported` 管理员审计。
 
 CSV 仅包含终态事件的安全元数据。字符串中的 CR/LF/制表符会被替换；忽略前导空白后以 `=`、`+`、`-` 或 `@` 开头的值会加单引号，避免电子表格公式注入。导出不包含请求正文、prompt、answer、Secret、签名、nonce、原始 IP 或上游原始错误；`remote_ip_hash` 仍只是不可逆哈希。调用记录和聚合只读取控制面事件，不调用 Open WebUI、Bifrost，也不建立第二套积分余额。
+
+## 保留期维护
+
+保留期只由部署变量决定，管理员请求不能提交任意 cutoff。`GET /retention/preview` 按服务器当前 UTC Unix 秒计算两个开区间 cutoff：`created_at < now - retention_days * 86400` 的记录才算过期。响应同时返回过期总数、下一批数量和固定批次上限，并带 `Cache-Control: no-store`。
+
+执行前必须把预览中的总数原样放入请求，并明确确认：
+
+```json
+{
+  "expected_event_count": 1200,
+  "expected_audit_count": 30,
+  "confirmed": true
+}
+```
+
+`POST /retention/purge` 还必须携带当前管理员 Cookie 和 `X-Zangpu-CSRF`。执行事务会重新计算两个总数；任一变化都返回 `409 ADMIN_RETENTION_SNAPSHOT_CHANGED` 并回滚。未确认返回 `422 ADMIN_RETENTION_CONFIRMATION_REQUIRED`；没有过期记录返回 `409 ADMIN_RETENTION_EMPTY`，且不写零行清理审计。
+
+非空执行分别选择两个表中最老的 `created_at,id`，每表最多删除 `RETENTION_BATCH_SIZE` 行，验证实际删除行数后写入新的不可变 `retention.purged` 审计。响应返回本批删除数和剩余数；剩余不为零时重新预览后继续下一批，不能复用旧快照。
+
+普通 ORM 对终态事件和管理员审计的更新/删除仍被拒绝。专用维护事务只删除过期 `ApiCallEvent` 和 `ApiClientAdminAudit`，不删除 `ApiCallOperation`，因此不会让请求 ID 幂等状态随事件保留期静默失效。FastAPI 生命周期不自动启动清理循环；生产环境由部署运维显式调度上述预览/确认流程。真实 PostgreSQL 锁、索引计划、vacuum 和备份恢复联动仍需在部署环境验收。

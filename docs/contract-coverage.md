@@ -27,7 +27,7 @@
 | 调用方模型/端点权限隔离 | 已验证 API/缺失 UI | `ApiClient.allowed_models/allowed_endpoints`、metadata/chat policy、管理员版本化 policy update | caller isolation、signed `/models`/`/usage` 和管理更新通过；无管理页 | 管理页提供端点/模型多选，并提示当前 Bifrost 单初始模型限制 |
 | JSON/SSE REST API、统一错误、版本化 | 已验证 | `c910df1`、`dca1b13`、`2dc7bee` | backend `155 passed` 基线、signed HTTP 和 SSE 合同通过 | 生成/补齐面向客户的 OpenAPI/API 文档和部署 smoke |
 | Python SDK、PowerShell/cURL、示例 | 已验证（范围有限） | `e44198c`、`docs/api-sdk.md`、`examples/` | SDK/cURL focused `11/11`，wheel import 和 loopback 签名通过 | 补 JavaScript SDK/示例与 CI smoke；不把正式长期 SDK 维护外推为已交付 |
-| API 调用记录、异常、统计和监控趋势 | 已验证 API/缺失 UI | `ApiCallEvent`、`AdminObservabilityService`、管理员 events/summary/export 路由和不可变导出审计 | 筛选分页、精确 P50/P95/P99、UTC 趋势、10 万条汇总上限、1 万条公式安全 CSV 已通过服务/HTTP 合同；无管理页面、保留期作业和真实 PostgreSQL 数据量证据 | 经截图审查后接入记录/趋势页；部署环境验证查询计划和真实数据量，另行实现保留期策略 |
+| API 调用记录、异常、统计和监控趋势 | 已验证 API/缺失 UI | `ApiCallEvent`、`AdminObservabilityService`、`RetentionService`、管理员 events/summary/export/retention 路由及不可变审计 | 筛选分页、精确 P50/P95/P99、UTC 趋势、受限 CSV、固定策略预览和有界清理已通过服务/HTTP/迁移合同；无管理页面，真实 PostgreSQL 数据量、调度、vacuum 和备份联动未验证 | 经截图审查后接入记录/趋势/保留期页；部署环境验证索引计划、批处理调度和恢复流程 |
 | k6 基础压测脚本和结果记录 | 已验证工具/外部阻塞容量结论 | `4011e62`、`f6df0e4`、`docs/load-testing.md` | 官方 k6 v2.1.0 loopback `4/4`；三次真实签名请求通过 | 在部署环境跑 PostgreSQL/Valkey/Open WebUI/Bifrost smoke/steady/burst，形成 P50/P95/P99 与容量结论 |
 | 模型部署、GPU、真实 Provider | 外部阻塞 | Bifrost typed client/preflight、内部模型路由 | loopback Bifrost v1.6.3 PoC 通过；无甲方 GPU/模型部署证据 | 甲方提供资源后做部署、超时、真实模型和容量验收 |
 | 真实 Open WebUI/ PostgreSQL/ Valkey 集成 | 外部阻塞 | Compose 拓扑和 lifespan ownership 已实现 | Docker CLI 不可用；本地 SQLite/fakeredis/mock 不替代部署证据 | 在部署环境执行迁移、跨服务 chat/credit、故障恢复和性能门禁 |

@@ -103,6 +103,7 @@ class ApiClientAdminAudit(Base):
         CheckConstraint("target_id IS NULL OR length(target_id) BETWEEN 1 AND 128", name="target_id_length"),
         CheckConstraint("length(action) BETWEEN 1 AND 64", name="action_length"),
         Index("ix_api_client_admin_audit_api_client_created", "api_client_id", "created_at", "id"),
+        Index("ix_api_client_admin_audit_created", "created_at", "id"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)

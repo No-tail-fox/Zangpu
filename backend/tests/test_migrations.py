@@ -144,3 +144,29 @@ def test_stream_evidence_migration_preserves_existing_operations(tmp_path: Path)
         assert columns[name]["nullable"] is False
         assert columns[name]["default"] is None
     engine.dispose()
+
+
+def test_retention_indexes_are_revision_0004_and_round_trip(tmp_path: Path) -> None:
+    database_path = tmp_path / "migration-retention-indexes.sqlite3"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+    config = migration_config(database_url)
+    script = ScriptDirectory.from_config(config)
+
+    assert script.get_current_head() == "0004"
+    command.upgrade(config, "head")
+    engine = create_engine(database_url)
+    schema = inspect(engine)
+    assert "ix_api_call_event_created" in {item["name"] for item in schema.get_indexes("api_call_event")}
+    assert "ix_api_client_admin_audit_created" in {
+        item["name"] for item in schema.get_indexes("api_client_admin_audit")
+    }
+    engine.dispose()
+
+    command.downgrade(config, "0003")
+    engine = create_engine(database_url)
+    schema = inspect(engine)
+    assert "ix_api_call_event_created" not in {item["name"] for item in schema.get_indexes("api_call_event")}
+    assert "ix_api_client_admin_audit_created" not in {
+        item["name"] for item in schema.get_indexes("api_client_admin_audit")
+    }
+    engine.dispose()

@@ -24,6 +24,13 @@ from backend.app.services.observability import (
     AdminObservabilityLimitError,
     AdminObservabilityService,
 )
+from backend.app.services.retention import (
+    RetentionConfirmationError,
+    RetentionNothingToPurge,
+    RetentionPurgeRequest,
+    RetentionService,
+    RetentionSnapshotConflict,
+)
 
 ADMIN_SESSION_COOKIE = "zangpu_admin_session"
 
@@ -75,6 +82,10 @@ def _service(request: Request) -> AdminCallerService:
 
 def _observability_service(request: Request) -> AdminObservabilityService:
     return request.app.state.admin_observability
+
+
+def _retention_service(request: Request) -> RetentionService:
+    return request.app.state.admin_retention
 
 
 def read_admin_event_query(
@@ -235,6 +246,47 @@ async def export_events(
             "X-Zangpu-Export-Rows": str(exported.row_count),
         },
     )
+
+
+@router.get("/retention/preview")
+async def preview_retention(
+    request: Request,
+    _claims: Annotated[AdminSessionClaims, Depends(require_admin_session)],
+) -> JSONResponse:
+    preview = await asyncio.to_thread(_retention_service(request).preview, now=int(time()))
+    return JSONResponse(content=preview.model_dump(mode="json"), headers={"Cache-Control": "no-store"})
+
+
+@router.post("/retention/purge")
+async def purge_retention(
+    request: Request,
+    payload: RetentionPurgeRequest,
+    claims: Annotated[AdminSessionClaims, Depends(require_admin_write)],
+) -> JSONResponse:
+    try:
+        result = await asyncio.to_thread(
+            _retention_service(request).purge,
+            actor_id=claims.actor_id,
+            now=int(time()),
+            expected_event_count=payload.expected_event_count,
+            expected_audit_count=payload.expected_audit_count,
+            confirmed=payload.confirmed,
+        )
+    except RetentionConfirmationError as exc:
+        raise AdminApiError(
+            "ADMIN_RETENTION_CONFIRMATION_REQUIRED",
+            422,
+            "Retention purge requires explicit confirmation.",
+        ) from exc
+    except RetentionSnapshotConflict as exc:
+        raise AdminApiError(
+            "ADMIN_RETENTION_SNAPSHOT_CHANGED",
+            409,
+            "Retention eligibility changed; preview again before purging.",
+        ) from exc
+    except RetentionNothingToPurge as exc:
+        raise AdminApiError("ADMIN_RETENTION_EMPTY", 409, "No records are eligible for retention purge.") from exc
+    return JSONResponse(content=result.model_dump(mode="json"), headers={"Cache-Control": "no-store"})
 
 
 @router.post("/callers", status_code=201)

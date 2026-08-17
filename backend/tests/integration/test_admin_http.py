@@ -14,6 +14,7 @@ from backend.app.integrations.bifrost.client import BifrostClient
 from backend.app.integrations.openwebui.client import OpenWebUIClient
 from backend.app.main import create_app
 from backend.app.models import Base
+from backend.app.models.audits import ApiClientAdminAudit
 from backend.app.models.credentials import ApiClientCredential
 from backend.app.models.events import ApiCallEvent
 from backend.app.services.observability import AdminObservabilityService
@@ -307,3 +308,99 @@ def test_admin_http_observability_is_authenticated_bounded_and_csv_safe(
         422,
         "ADMIN_OBSERVABILITY_LIMIT",
     )
+
+
+def test_admin_http_retention_requires_preview_confirmation_and_csrf(monkeypatch: pytest.MonkeyPatch) -> None:
+    database, keys = runtime()
+    application = build_application(monkeypatch, database, keys)
+
+    with TestClient(application) as client:
+        unauthenticated = client.get("/api/v1/admin/retention/preview")
+        login = client.post(
+            "/api/v1/admin/session",
+            headers={"x-zangpu-admin-token": "admin-login-token-that-is-at-least-32-bytes"},
+        )
+        csrf = login.json()["csrf_token"]
+        created = client.post(
+            "/api/v1/admin/callers",
+            headers={"x-zangpu-csrf": csrf, "idempotency-key": "http-retention-create-1"},
+            json=caller_payload(),
+        )
+        client_id = created.json()["client"]["id"]
+        with database.sessions.begin() as session:
+            session.add(terminal_event("event-retention-old", client_id=client_id, created_at=1))
+            session.add(
+                ApiClientAdminAudit(
+                    id="audit-retention-old",
+                    actor_user_id="admin",
+                    api_client_id=client_id,
+                    target_type="export",
+                    target_id="old-export",
+                    action="events.exported",
+                    changed_fields=["row_count"],
+                    before_summary={},
+                    after_summary={"row_count": 1},
+                    created_at=1,
+                )
+            )
+
+        preview = client.get("/api/v1/admin/retention/preview")
+        expected = {
+            "expected_event_count": preview.json()["event_eligible_count"],
+            "expected_audit_count": preview.json()["audit_eligible_count"],
+            "confirmed": True,
+        }
+        no_csrf = client.post("/api/v1/admin/retention/purge", json=expected)
+        unconfirmed = client.post(
+            "/api/v1/admin/retention/purge",
+            headers={"x-zangpu-csrf": csrf},
+            json={**expected, "confirmed": False},
+        )
+        stale = client.post(
+            "/api/v1/admin/retention/purge",
+            headers={"x-zangpu-csrf": csrf},
+            json={**expected, "expected_event_count": expected["expected_event_count"] + 1},
+        )
+        purged = client.post(
+            "/api/v1/admin/retention/purge",
+            headers={"x-zangpu-csrf": csrf},
+            json=expected,
+        )
+        empty_preview = client.get("/api/v1/admin/retention/preview")
+        empty = client.post(
+            "/api/v1/admin/retention/purge",
+            headers={"x-zangpu-csrf": csrf},
+            json={
+                "expected_event_count": empty_preview.json()["event_eligible_count"],
+                "expected_audit_count": empty_preview.json()["audit_eligible_count"],
+                "confirmed": True,
+            },
+        )
+        with database.sessions() as session:
+            old_event = session.get(ApiCallEvent, "event-retention-old")
+            old_audit = session.get(ApiClientAdminAudit, "audit-retention-old")
+            retention_audit = session.scalar(
+                select(ApiClientAdminAudit).where(ApiClientAdminAudit.action == "retention.purged")
+            )
+
+    assert (unauthenticated.status_code, unauthenticated.json()["error"]["code"]) == (
+        401,
+        "ADMIN_AUTH_REQUIRED",
+    )
+    assert preview.status_code == 200
+    assert preview.headers["cache-control"] == "no-store"
+    assert (preview.json()["event_eligible_count"], preview.json()["audit_eligible_count"]) == (1, 1)
+    assert (no_csrf.status_code, no_csrf.json()["error"]["code"]) == (403, "ADMIN_CSRF_FAILED")
+    assert (unconfirmed.status_code, unconfirmed.json()["error"]["code"]) == (
+        422,
+        "ADMIN_RETENTION_CONFIRMATION_REQUIRED",
+    )
+    assert (stale.status_code, stale.json()["error"]["code"]) == (
+        409,
+        "ADMIN_RETENTION_SNAPSHOT_CHANGED",
+    )
+    assert purged.status_code == 200
+    assert purged.headers["cache-control"] == "no-store"
+    assert (purged.json()["event_deleted_count"], purged.json()["audit_deleted_count"]) == (1, 1)
+    assert (empty.status_code, empty.json()["error"]["code"]) == (409, "ADMIN_RETENTION_EMPTY")
+    assert old_event is None and old_audit is None and retention_audit is not None

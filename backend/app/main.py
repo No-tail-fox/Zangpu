@@ -24,6 +24,7 @@ from backend.app.services.callers import DatabaseCredentialResolver
 from backend.app.services.chat import ExternalChatService
 from backend.app.services.metadata import ExternalMetadataService
 from backend.app.services.observability import AdminObservabilityService
+from backend.app.services.retention import RetentionService
 from backend.app.settings import Settings, load_settings
 
 SERVICE_NAME = "zangpu-api-control-plane"
@@ -86,6 +87,12 @@ def create_app(
         )
         app.state.admin_callers = AdminCallerService(database_runtime.sessions, app.state.credential_keyring)
         app.state.admin_observability = AdminObservabilityService(database_runtime.sessions)
+        app.state.admin_retention = RetentionService(
+            database_runtime.sessions,
+            event_retention_days=active_settings.event_retention_days,
+            admin_audit_retention_days=active_settings.admin_audit_retention_days,
+            batch_size=active_settings.retention_batch_size,
+        )
         redis_client = None
         bifrost_client: BifrostClient | None = None
         openwebui_client: OpenWebUIClient | None = None

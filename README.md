@@ -28,7 +28,7 @@ The installable Python SDK, executable PowerShell `curl.exe` signer and Chinese 
 
 ## Administrator API
 
-The independent administrator session, caller/credential lifecycle, permission/quota updates and Bifrost outbox semantics are documented in [`docs/admin-api.md`](docs/admin-api.md). Production requires separate `ADMIN_SESSION_SECRET` and `ADMIN_LOGIN_TOKEN` values. Caller Secrets are returned once and never appear in list/detail responses.
+The independent administrator session, caller/credential lifecycle, permission/quota updates, observability/export, bounded retention maintenance and Bifrost outbox semantics are documented in [`docs/admin-api.md`](docs/admin-api.md). Production requires separate `ADMIN_SESSION_SECRET` and `ADMIN_LOGIN_TOKEN` values. Caller Secrets are returned once and never appear in list/detail responses.
 
 ## Load Acceptance
 
@@ -42,6 +42,8 @@ Alembic fails closed unless `sqlalchemy.url` or `ZANGPU_DATABASE_URL` is supplie
 $env:ZANGPU_DATABASE_URL='postgresql+psycopg://<user>:<password>@<host>:5432/<database>'
 .\.bootstrap-uv\Scripts\uv.exe run alembic upgrade head
 ```
+
+Retention defaults are 180 days for terminal events, 730 days for administrator audits and 1,000 rows per table per purge. `ZANGPU_EVENT_RETENTION_DAYS`, `ZANGPU_ADMIN_AUDIT_RETENTION_DAYS` and `ZANGPU_RETENTION_BATCH_SIZE` are bounded deployment settings; administrator audit retention cannot be shorter than event retention. The control plane does not run an implicit lifespan cleanup loop. Deployment operations must schedule the authenticated preview/confirm flow documented in `docs/admin-api.md` and retain its audit evidence.
 
 ## Credential Key Ring
 

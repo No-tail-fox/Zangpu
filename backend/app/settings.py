@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     admin_session_secret: BoundedSecret
     admin_login_token: BoundedSecret | None = None
     admin_session_ttl_seconds: int = Field(default=3600, ge=300, le=86_400)
+    event_retention_days: int = Field(default=180, ge=30, le=3_650)
+    admin_audit_retention_days: int = Field(default=730, ge=365, le=3_650)
+    retention_batch_size: int = Field(default=1_000, ge=1, le=10_000)
     api_credential_keys: CredentialKeys
     api_credential_active_key_id: str = Field(pattern=r"^[A-Za-z0-9._-]{1,64}$")
     contract_api_timestamp_tolerance_seconds: int = Field(default=300, ge=30, le=900)
@@ -56,6 +59,8 @@ class Settings(BaseSettings):
             raise ValueError("concurrency heartbeat must be less than half the lease")
         if self.outbox_max_retry_seconds < self.outbox_base_retry_seconds:
             raise ValueError("outbox maximum retry delay must not be below its base delay")
+        if self.admin_audit_retention_days < self.event_retention_days:
+            raise ValueError("administrator audit retention must not be shorter than event retention")
         if self.environment == "production" and self.admin_login_token is None:
             raise ValueError("administrator login token is required in production")
         if (

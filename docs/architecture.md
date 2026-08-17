@@ -42,7 +42,7 @@ Task 1 establishes these standalone PostgreSQL truths without adding public mana
 
 All history-bearing foreign keys use restrictive deletion and have covering indexes. Admin audits contain only changed field names and bounded redacted before/after summaries; audit rows reject Secret, ciphertext, Authorization, signature, nonce, request content and raw upstream error fields. Pending/error bindings may exist before remote IDs are assigned; active/disabled bindings require complete remote identifiers and encrypted Bifrost material. Outbox payloads contain desired configuration only, never Secret, authorization or ciphertext fields.
 
-The Alembic chain has one head and is verified by clean SQLite upgrade, metadata drift check, downgrade and re-upgrade. Revision `0002` adds immutable `quota_overrun` evidence while preserving existing event rows. PostgreSQL SQL compilation is a source gate; execution against the deployment PostgreSQL remains an integration gate.
+The Alembic chain has one head and is verified by clean SQLite upgrade, metadata drift check, downgrade and re-upgrade. Revision `0002` adds immutable `quota_overrun` evidence, `0003` preserves stream/provider-usage evidence and `0004` adds global `(created_at, id)` event/audit indexes for bounded retention. PostgreSQL SQL compilation is a source gate; execution against the deployment PostgreSQL remains an integration gate.
 
 ## Caller Authentication
 
@@ -102,8 +102,16 @@ The models route projects only `ApiClient.allowed_models`; it never lists Bifros
 
 Metadata requests do not acquire concurrency, reserve request/Token quota, create operations/events, call Bifrost or access Open WebUI. In particular, the usage response contains no credit balance because Open WebUI remains the sole balance authority. Metadata is therefore the default low-cost k6 target; chat load requires explicit credit-spend confirmation and never retries inference automatically. Real four-service performance results remain deployment-owned evidence.
 
+## Retention Maintenance
+
+Task 14 implements the explicit maintenance path reserved by the immutable-history model. Ordinary ORM entity and bulk deletes for `ApiCallEvent` and `ApiClientAdminAudit` remain rejected. Only `RetentionService` selects bounded oldest-first IDs and issues Core deletes through the current transaction connection; the transaction verifies delete row counts and appends one `retention.purged` administrator audit before commit.
+
+Policy comes only from bounded deployment settings: event history defaults to 180 days, administrator audit history to 730 days and each run to 1,000 rows per table, with a hard maximum of 10,000. Audit retention cannot be shorter than event retention. The API accepts no arbitrary cutoff. A read-only preview reports fixed cutoffs, total eligible counts and the next batch; the CSRF-protected purge must echo both exact counts and explicit confirmation. Changed counts return a conflict and delete nothing. Empty runs do not create misleading audit rows.
+
+This first maintenance scope deletes terminal event rows and expired administrator audits. It deliberately retains `ApiCallOperation`, so request-ID idempotency does not silently expire. No background cleanup starts in FastAPI lifespan: deployment operations own scheduling and must repeat the authenticated preview/purge flow until the returned remaining counts are zero. Real PostgreSQL locking, index plans, vacuum behavior and backup/restore interaction remain deployment acceptance gates.
+
 ## Secret Handling
 
 Required Secret settings use redacted Pydantic types. The caller credential key ring is a bounded JSON version map supplied only by the environment or Secret Manager, and application startup validates its 32-byte keys and active version. Caller Secrets and Bifrost virtual keys are not browser configuration, defaults, health fields or ordinary log context. Compose requires deployment-provided values and does not ship working Secret defaults.
 
-ORM entities retain ciphertext for later security services, while default credential and binding response projections omit ciphertext, nonce, fingerprint and key-version fields. Terminal call events reject ORM entity and bulk mutations; retention deletion must use its future explicit bounded maintenance path.
+ORM entities retain ciphertext for later security services, while default credential and binding response projections omit ciphertext, nonce, fingerprint and key-version fields. Terminal call events and administrator audits reject ordinary ORM entity and bulk mutations; retention deletion uses only the dedicated bounded maintenance transaction described above.
