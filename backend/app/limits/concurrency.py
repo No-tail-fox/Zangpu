@@ -23,6 +23,17 @@ class ConcurrencyDecision:
     observed_at_ms: int
 
 
+@dataclass(frozen=True, slots=True)
+class ConcurrencySnapshot:
+    occupied: int
+    limit: int
+    remaining: int
+    saturated: bool
+    next_lease_expires_at_ms: int
+    last_lease_expires_at_ms: int
+    observed_at_ms: int
+
+
 class ConcurrencyLimiter:
     def __init__(
         self,
@@ -36,6 +47,7 @@ class ConcurrencyLimiter:
         self._lease_milliseconds = lease_seconds * 1_000
         self._acquire_script = load_lua_script("concurrency_acquire.lua")
         self._heartbeat_script = load_lua_script("concurrency_heartbeat.lua")
+        self._observe_script = load_lua_script("concurrency_observe.lua")
         self._release_script = load_lua_script("concurrency_release.lua")
 
     def _key_and_member(self, api_client_id: str, operation_id: str) -> tuple[str, str]:
@@ -69,6 +81,29 @@ class ConcurrencyLimiter:
         if extended not in {0, 1} or expires_at_ms < observed_at_ms:
             raise ControlPlaneUnavailable
         return bool(extended)
+
+    async def observe(self, *, api_client_id: str, limit: int) -> ConcurrencySnapshot:
+        if not 1 <= limit <= 1_000_000:
+            raise ValueError("concurrency limit must be between 1 and 1000000")
+        key, _member = self._key_and_member(api_client_id, "observation")
+        raw_result = await fail_closed(self._redis.eval(self._observe_script, 1, key))
+        occupied, next_expiry, last_expiry, observed_at = parse_integer_sequence(raw_result, length=4)
+        if (
+            occupied < 0
+            or next_expiry < observed_at
+            or last_expiry < next_expiry
+            or (occupied == 0 and (next_expiry != observed_at or last_expiry != observed_at))
+        ):
+            raise ControlPlaneUnavailable
+        return ConcurrencySnapshot(
+            occupied=occupied,
+            limit=limit,
+            remaining=max(limit - occupied, 0),
+            saturated=occupied >= limit,
+            next_lease_expires_at_ms=next_expiry,
+            last_lease_expires_at_ms=last_expiry,
+            observed_at_ms=observed_at,
+        )
 
     async def release(self, *, api_client_id: str, operation_id: str) -> bool:
         key, member = self._key_and_member(api_client_id, operation_id)

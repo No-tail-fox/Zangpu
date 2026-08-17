@@ -956,6 +956,80 @@ a:focus-visible {
   background: #fbfcfc;
 }
 
+.concurrency-band {
+  padding: 15px 16px 14px;
+  border-top: 1px solid var(--border);
+}
+
+.subsection-title,
+.subsection-actions,
+.inline-loading {
+  display: flex;
+  align-items: center;
+}
+
+.subsection-title,
+.subsection-actions {
+  gap: 8px;
+}
+
+.subsection-title {
+  color: #465256;
+}
+
+.capacity-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 13px;
+  border: 1px solid var(--border);
+}
+
+.capacity-grid > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+  padding: 10px 12px;
+  border-right: 1px solid var(--border);
+}
+
+.capacity-grid > div:last-child {
+  border-right: 0;
+}
+
+.capacity-grid span,
+.capacity-meta,
+.inline-loading,
+.concurrency-error {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 16px;
+}
+
+.capacity-grid strong {
+  font-size: 18px;
+  line-height: 24px;
+}
+
+.capacity-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  margin-top: 8px;
+}
+
+.inline-loading {
+  min-height: 58px;
+  gap: 7px;
+}
+
+.concurrency-error {
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  margin: 0;
+  color: var(--danger);
+}
+
 .subsection-heading h3,
 .form-section h3 {
   margin: 0;
@@ -1435,12 +1509,21 @@ a:focus-visible {
     flex-direction: column;
   }
 
+  .detail-heading {
+    position: relative;
+  }
+
+  .detail-heading > div:first-child {
+    padding-right: 40px;
+  }
+
   .detail-actions .secondary-button {
     width: 100%;
   }
 
   .detail-actions .icon-button {
     position: absolute;
+    top: 14px;
     right: 15px;
   }
 

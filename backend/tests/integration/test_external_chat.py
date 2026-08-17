@@ -27,6 +27,7 @@ from backend.app.integrations.bifrost.models import (
 from backend.app.integrations.openwebui.models import OpenWebUIUpstreamError
 from backend.app.limits.concurrency import ConcurrencyDecision
 from backend.app.limits.qps import QpsDecision
+from backend.app.limits.redis import ControlPlaneUnavailable
 from backend.app.models import Base
 from backend.app.models.bindings import ApiClientBinding
 from backend.app.models.clients import ApiClient
@@ -36,7 +37,7 @@ from backend.app.models.quotas import ApiClientQuotaUsage
 from backend.app.security.credentials import create_protected_credential
 from backend.app.security.dependencies import AuthenticatedCaller
 from backend.app.security.keyring import CredentialKeyring
-from backend.app.services.chat import ExternalChatService
+from backend.app.services.chat import ExternalChatResult, ExternalChatService
 from backend.app.workers.recovery import ExternalChatRecoveryWorker
 
 VIRTUAL_KEY_VALUE = "vk-chat-redaction-sentinel"
@@ -179,12 +180,28 @@ class FakeQpsLimiter:
 
 
 class FakeConcurrencyLimiter:
-    def __init__(self, calls: list[str]) -> None:
+    def __init__(
+        self,
+        calls: list[str],
+        *,
+        allowed: bool = True,
+        heartbeat_renewed: bool = True,
+    ) -> None:
         self.calls = calls
+        self.allowed = allowed
+        self.heartbeat_renewed = heartbeat_renewed
 
     async def acquire(self, **_kwargs: object) -> ConcurrencyDecision:
         self.calls.append("concurrency_acquire")
-        return ConcurrencyDecision(True, 1, 2, 1, 1_785_420_160_000, 1_785_420_100_000)
+        count = 1 if self.allowed else 2
+        return ConcurrencyDecision(
+            self.allowed,
+            count,
+            2,
+            max(2 - count, 0),
+            1_785_420_160_000,
+            1_785_420_100_000,
+        )
 
     async def release(self, **_kwargs: object) -> bool:
         self.calls.append("concurrency_release")
@@ -192,7 +209,7 @@ class FakeConcurrencyLimiter:
 
     async def heartbeat(self, **_kwargs: object) -> bool:
         self.calls.append("concurrency_heartbeat")
-        return True
+        return self.heartbeat_renewed
 
 
 class FakeBifrost:
@@ -374,6 +391,7 @@ def build_service(
     calls: list[str],
     bifrost: FakeBifrost | FakeStreamingBifrost | None = None,
     openwebui: FakeOpenWebUI | None = None,
+    concurrency_limiter: FakeConcurrencyLimiter | None = None,
     heartbeat_interval_seconds: float = 15.0,
     monotonic_seconds: Callable[[], float] = time.monotonic,
 ) -> tuple[ExternalChatService, FakeBifrost]:
@@ -384,7 +402,7 @@ def build_service(
             keyring=ring,
             nonce_guard=FakeNonceGuard(calls),
             qps_limiter=FakeQpsLimiter(calls),
-            concurrency_limiter=FakeConcurrencyLimiter(calls),
+            concurrency_limiter=concurrency_limiter or FakeConcurrencyLimiter(calls),
             bifrost=remote,  # type: ignore[arg-type]
             openwebui=openwebui or FakeOpenWebUI(calls),  # type: ignore[arg-type]
             global_max_output_tokens=256,
@@ -425,6 +443,9 @@ def test_non_stream_success_settles_credit_quota_event_and_releases_lease(engine
 
     assert result.response.usage.total_tokens == 8
     assert result.rate_limit_headers["X-RateLimit-Remaining"] == "9"
+    assert result.rate_limit_headers["X-Concurrency-Limit"] == "2"
+    assert result.rate_limit_headers["X-Concurrency-Remaining"] == "1"
+    assert result.rate_limit_headers["X-Concurrency-Reset"] == "1785420160"
     assert calls == [
         "nonce",
         "qps",
@@ -442,6 +463,117 @@ def test_non_stream_success_settles_credit_quota_event_and_releases_lease(engine
         assert operation.total_tokens == 8 and operation.credit_settlement_id is not None
         assert event is not None and (event.outcome, event.stage, event.charged_micro) == ("success", "response", 20)
         assert quotas["daily"].token_reserved == 0 and quotas["daily"].token_consumed == 8
+
+
+def test_concurrency_rejection_returns_stable_headers_before_quota_or_inference(engine: Engine) -> None:
+    ring = seed_caller(engine)
+    calls: list[str] = []
+    concurrency = FakeConcurrencyLimiter(calls, allowed=False)
+    service, remote = build_service(engine, ring, calls=calls, concurrency_limiter=concurrency)
+
+    with pytest.raises(ExternalApiError) as captured:
+        execute(service)
+
+    assert captured.value.code == "CONCURRENCY_LIMITED"
+    assert captured.value.headers == {
+        "X-RateLimit-Limit": "10",
+        "X-RateLimit-Remaining": "9",
+        "X-RateLimit-Reset": "1785420101",
+        "X-Concurrency-Limit": "2",
+        "X-Concurrency-Remaining": "0",
+        "X-Concurrency-Reset": "1785420160",
+        "Retry-After": "60",
+    }
+    assert calls == ["nonce", "qps", "concurrency_acquire"]
+    assert remote.forward_count == 0
+    with Session(engine) as session:
+        assert session.scalar(select(ApiCallOperation)) is None
+        assert session.scalar(select(ApiCallEvent)) is None
+
+
+def test_busy_non_stream_renews_lease_until_provider_completes(engine: Engine) -> None:
+    ring = seed_caller(engine)
+    calls: list[str] = []
+
+    class SlowBifrost(FakeBifrost):
+        async def forward_chat_completion(
+            self, payload: dict[str, object], *, virtual_key: SecretStr
+        ) -> ChatCompletionResponse:
+            await asyncio.sleep(0.02)
+            return await super().forward_chat_completion(payload, virtual_key=virtual_key)
+
+    remote = SlowBifrost(calls)
+    service, _remote = build_service(
+        engine,
+        ring,
+        calls=calls,
+        bifrost=remote,
+        heartbeat_interval_seconds=0.005,
+    )
+
+    result = execute(service)
+
+    assert result.response.usage.total_tokens == 8
+    assert calls.count("concurrency_heartbeat") >= 1
+    assert calls.index("concurrency_heartbeat") < calls.index("credit_settle")
+    assert calls[-1] == "concurrency_release"
+
+
+def test_non_stream_lost_lease_cancels_provider_and_releases(engine: Engine) -> None:
+    ring = seed_caller(engine)
+    calls: list[str] = []
+
+    class BlockingBifrost(FakeBifrost):
+        cancelled = False
+
+        async def forward_chat_completion(
+            self, _payload: dict[str, object], *, virtual_key: SecretStr
+        ) -> ChatCompletionResponse:
+            assert virtual_key.get_secret_value() == VIRTUAL_KEY_VALUE
+            self.calls.append("bifrost")
+            self.forward_count += 1
+            try:
+                await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
+            raise AssertionError("blocking provider was not cancelled")
+
+    class ProviderLeaseLimiter(FakeConcurrencyLimiter):
+        async def heartbeat(self, **_kwargs: object) -> bool:
+            self.calls.append("concurrency_heartbeat")
+            return "bifrost" not in self.calls
+
+    concurrency = ProviderLeaseLimiter(calls)
+    remote = BlockingBifrost(calls)
+    service, _remote = build_service(
+        engine,
+        ring,
+        calls=calls,
+        bifrost=remote,
+        concurrency_limiter=concurrency,
+        heartbeat_interval_seconds=0.005,
+    )
+
+    async def scenario() -> ExternalChatResult:
+        return await asyncio.wait_for(
+            service.execute(
+                request=request_model(),
+                caller=caller(),
+                server_request_id="req_server_lost_lease_0123456789",
+                request_fingerprint="d" * 64,
+            ),
+            timeout=0.2,
+        )
+
+    with pytest.raises(ControlPlaneUnavailable):
+        asyncio.run(scenario())
+
+    assert remote.cancelled
+    assert calls.count("concurrency_heartbeat") >= 1
+    assert calls.index("bifrost") < len(calls) - 1 - calls[::-1].index("concurrency_heartbeat")
+    assert calls.count("concurrency_release") == 1
+    assert "credit_settle" not in calls and "credit_cancel" not in calls
 
 
 def test_completed_request_id_never_calls_model_or_charges_twice(engine: Engine) -> None:

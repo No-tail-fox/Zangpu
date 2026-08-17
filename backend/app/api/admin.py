@@ -11,6 +11,8 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 
+from backend.app.limits.concurrency import ConcurrencyLimiter
+from backend.app.limits.redis import ControlPlaneUnavailable
 from backend.app.security.admin import AdminSessionClaims, AdminSessionError, AdminSessionManager
 from backend.app.services.admin import (
     AdminCallerCreateRequest,
@@ -86,6 +88,10 @@ def _observability_service(request: Request) -> AdminObservabilityService:
 
 def _retention_service(request: Request) -> RetentionService:
     return request.app.state.admin_retention
+
+
+def _concurrency_limiter(request: Request) -> ConcurrencyLimiter:
+    return request.app.state.concurrency_limiter
 
 
 def read_admin_event_query(
@@ -172,7 +178,11 @@ async def list_callers(
 ) -> JSONResponse:
     items = await asyncio.to_thread(_service(request).list_callers, offset=offset, limit=limit)
     return JSONResponse(
-        content={"items": [item.model_dump(mode="json") for item in items], "offset": offset, "limit": limit},
+        content={
+            "items": [item.client.model_dump(mode="json") for item in items],
+            "offset": offset,
+            "limit": limit,
+        },
         headers={"Cache-Control": "no-store"},
     )
 
@@ -330,6 +340,43 @@ async def get_caller(
     except AdminCallerNotFound as exc:
         raise AdminApiError("ADMIN_CALLER_NOT_FOUND", 404, "Caller was not found.") from exc
     return JSONResponse(content=detail.model_dump(mode="json"), headers={"Cache-Control": "no-store"})
+
+
+@router.get("/callers/{client_id}/concurrency")
+async def get_caller_concurrency(
+    request: Request,
+    client_id: str,
+    _claims: Annotated[AdminSessionClaims, Depends(require_admin_session)],
+) -> JSONResponse:
+    try:
+        detail = await asyncio.to_thread(_service(request).get_caller, client_id)
+    except AdminCallerNotFound as exc:
+        raise AdminApiError("ADMIN_CALLER_NOT_FOUND", 404, "Caller was not found.") from exc
+    try:
+        snapshot = await _concurrency_limiter(request).observe(
+            api_client_id=client_id,
+            limit=detail.client.concurrency_limit,
+        )
+    except ControlPlaneUnavailable as exc:
+        raise AdminApiError(
+            "ADMIN_CONTROL_PLANE_UNAVAILABLE",
+            503,
+            "Concurrency state is temporarily unavailable.",
+        ) from exc
+    state = "idle" if snapshot.occupied == 0 else "saturated" if snapshot.saturated else "available"
+    return JSONResponse(
+        content={
+            "api_client_id": client_id,
+            "configured_limit": snapshot.limit,
+            "occupied": snapshot.occupied,
+            "available": snapshot.remaining,
+            "state": state,
+            "observed_at_ms": snapshot.observed_at_ms,
+            "next_lease_expires_at_ms": snapshot.next_lease_expires_at_ms,
+            "last_lease_expires_at_ms": snapshot.last_lease_expires_at_ms,
+        },
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.patch("/callers/{client_id}")

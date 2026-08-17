@@ -92,7 +92,7 @@ def test_production_redis_client_has_bounded_timeouts_and_pool() -> None:
     asyncio.run(client.aclose())
 
 
-@pytest.mark.parametrize("control_name", ["nonce", "qps", "concurrency"])
+@pytest.mark.parametrize("control_name", ["nonce", "qps", "concurrency", "concurrency_observe"])
 def test_redis_timeout_fails_closed_without_process_fallback(control_name: str) -> None:
     async def scenario() -> tuple[ControlPlaneUnavailable, int]:
         redis = FailingRedis()
@@ -105,6 +105,9 @@ def test_redis_timeout_fails_closed_without_process_fallback(control_name: str) 
             ),
             "concurrency": lambda: ConcurrencyLimiter(redis).acquire(
                 api_client_id="client-1", operation_id="operation-1", limit=1
+            ),
+            "concurrency_observe": lambda: ConcurrencyLimiter(redis).observe(
+                api_client_id="client-1", limit=1
             ),
         }[control_name]
         with pytest.raises(ControlPlaneUnavailable) as captured:

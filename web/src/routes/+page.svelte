@@ -28,6 +28,7 @@
     type AdminCallerCreateInput,
     type AdminCallerPatchInput,
     type AdminEndpointPermission,
+    type CallerConcurrencyState,
     type CallerDetail,
     type CallerSummary,
     type CredentialSummary,
@@ -102,6 +103,9 @@
   let callers = $state<CallerSummary[]>([]);
   let selectedCallerId = $state<string | null>(null);
   let selectedDetail = $state<CallerDetail | null>(null);
+  let concurrencyState = $state<CallerConcurrencyState | null>(null);
+  let concurrencyError = $state<string | null>(null);
+  let loadingConcurrency = $state(false);
   let searchQuery = $state("");
   let createOpen = $state(false);
   let createForm = $state<CreateForm>(newCreateForm());
@@ -227,6 +231,8 @@
     callers = [];
     selectedCallerId = null;
     selectedDetail = null;
+    concurrencyState = null;
+    concurrencyError = null;
     policyForm = null;
     oneTimeSecret = null;
     $session = null;
@@ -256,6 +262,8 @@
       if (selectedCallerId && !callers.some((caller) => caller.id === selectedCallerId)) {
         selectedCallerId = null;
         selectedDetail = null;
+        concurrencyState = null;
+        concurrencyError = null;
         policyForm = null;
       }
     } catch (error) {
@@ -268,12 +276,15 @@
   async function selectCaller(callerId: string, section?: AdminSection) {
     if (section) $activeSection = section;
     selectedCallerId = callerId;
+    concurrencyState = null;
+    concurrencyError = null;
     loadingDetail = true;
     uiError = null;
     try {
       const detail = await api.getCaller(callerId);
       selectedDetail = detail;
       policyForm = policyFromCaller(detail.client);
+      void loadCallerConcurrency(callerId);
     } catch (error) {
       reportError(error);
     } finally {
@@ -281,9 +292,27 @@
     }
   }
 
+  async function loadCallerConcurrency(callerId: string) {
+    loadingConcurrency = true;
+    concurrencyError = null;
+    try {
+      const snapshot = await api.getCallerConcurrency(callerId);
+      if (selectedCallerId === callerId) concurrencyState = snapshot;
+    } catch {
+      if (selectedCallerId === callerId) {
+        concurrencyState = null;
+        concurrencyError = "实时并发状态暂时不可用。";
+      }
+    } finally {
+      if (selectedCallerId === callerId) loadingConcurrency = false;
+    }
+  }
+
   function clearSelectedCaller() {
     selectedCallerId = null;
     selectedDetail = null;
+    concurrencyState = null;
+    concurrencyError = null;
     policyForm = null;
   }
 
@@ -385,6 +414,7 @@
       const updated = await api.updateCaller(source.id, patch);
       selectedDetail = updated;
       policyForm = policyFromCaller(updated.client);
+      void loadCallerConcurrency(updated.client.id);
       await loadCallers();
     } catch (error) {
       reportError(error);
@@ -580,6 +610,18 @@
     });
   }
 
+  function formatDateMillis(value: number): string {
+    return new Date(value).toLocaleTimeString("zh-CN", {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+  }
+
+  function concurrencyStateLabel(state: CallerConcurrencyState["state"]): string {
+    return { idle: "空闲", available: "可用", saturated: "已满" }[state];
+  }
+
   function statusLabel(status: string): string {
     return (
       {
@@ -599,6 +641,8 @@
         callers = [];
         selectedCallerId = null;
         selectedDetail = null;
+        concurrencyState = null;
+        concurrencyError = null;
         policyForm = null;
         $session = null;
         $sessionPhase = "signed_out";
@@ -931,6 +975,54 @@
                 >
               {/if}
             </div>
+          </div>
+          <div class="concurrency-band" aria-live="polite">
+            <div class="subsection-heading">
+              <div class="subsection-title">
+                <Gauge size={16} />
+                <h3>实时并发</h3>
+              </div>
+              <div class="subsection-actions">
+                {#if concurrencyState}
+                  <span class:danger={concurrencyState.state === "saturated"} class="status-badge"
+                    >{concurrencyStateLabel(concurrencyState.state)}</span
+                  >
+                {/if}
+                <button
+                  class="icon-button"
+                  type="button"
+                  title="刷新实时并发"
+                  aria-label="刷新实时并发"
+                  disabled={loadingConcurrency}
+                  onclick={() => loadCallerConcurrency(selectedDetail!.client.id)}
+                  ><RefreshCw class={loadingConcurrency ? "spin" : undefined} size={15} /></button
+                >
+              </div>
+            </div>
+            {#if loadingConcurrency && !concurrencyState}
+              <div class="inline-loading"><LoaderCircle class="spin" size={16} />正在读取</div>
+            {:else if concurrencyError}
+              <p class="concurrency-error">{concurrencyError}</p>
+            {:else if concurrencyState}
+              <div class="capacity-grid">
+                <div><span>配置上限</span><strong>{concurrencyState.configured_limit}</strong></div>
+                <div><span>当前占用</span><strong>{concurrencyState.occupied}</strong></div>
+                <div><span>可用名额</span><strong>{concurrencyState.available}</strong></div>
+              </div>
+              <div class="capacity-meta">
+                <span>观测时间 {formatDateMillis(concurrencyState.observed_at_ms)}</span>
+                <span
+                  >最早到期 {concurrencyState.occupied > 0
+                    ? formatDateMillis(concurrencyState.next_lease_expires_at_ms)
+                    : "--"}</span
+                >
+                <span
+                  >最晚到期 {concurrencyState.occupied > 0
+                    ? formatDateMillis(concurrencyState.last_lease_expires_at_ms)
+                    : "--"}</span
+                >
+              </div>
+            {/if}
           </div>
         </section>
       {/if}

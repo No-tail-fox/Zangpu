@@ -65,6 +65,17 @@ export interface CallerListResult {
   limit: number;
 }
 
+export interface CallerConcurrencyState {
+  api_client_id: string;
+  configured_limit: number;
+  occupied: number;
+  available: number;
+  state: "idle" | "available" | "saturated";
+  observed_at_ms: number;
+  next_lease_expires_at_ms: number;
+  last_lease_expires_at_ms: number;
+}
+
 export interface AdminCallerCreateInput {
   name: string;
   description: string | null;
@@ -186,6 +197,10 @@ export class AdminApiClient {
 
   getCaller(clientId: string): Promise<CallerDetail> {
     return this.request(`/callers/${encodeURIComponent(clientId)}`, { method: "GET" });
+  }
+
+  getCallerConcurrency(clientId: string): Promise<CallerConcurrencyState> {
+    return this.request(`/callers/${encodeURIComponent(clientId)}/concurrency`, { method: "GET" });
   }
 
   createCaller(payload: AdminCallerCreateInput, idempotencyKey: string): Promise<CallerCreateResult> {

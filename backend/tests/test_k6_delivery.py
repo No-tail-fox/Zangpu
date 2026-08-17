@@ -3,6 +3,7 @@ import os
 import shutil
 import subprocess
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -55,6 +56,7 @@ def test_k6_delivery_freezes_signing_safety_profiles_and_results() -> None:
         "smoke",
         "steady",
         "burst",
+        "concurrency",
     ):
         assert value in combined
 
@@ -62,9 +64,17 @@ def test_k6_delivery_freezes_signing_safety_profiles_and_results() -> None:
     assert 'import { createSignedHeaders } from "./signing.js"' in script
     assert "ZANGPU_LOAD_CONFIRM_CHAT" in script
     assert "ConfirmChatSpend" in runner
+    assert "ExpectedConcurrencyLimit" in runner
+    assert "ConcurrencyAttempts" in runner
+    assert "concurrency_admitted" in script
+    assert "concurrency_limited" in script
+    assert "X-Concurrency-Remaining" in script
+    assert "Retry-After" in script
     assert "responseType: \"none\"" in script
     assert "http-debug" not in combined.lower()
-    assert "retry" not in script.lower()
+    assert ".retry(" not in script.lower()
+    assert "sleep(" not in script.lower()
+    assert "http.batch" not in script.lower()
     assert "真实" in guide
     assert "待执行" in report
     assert "example-secret" not in combined.lower()
@@ -153,6 +163,47 @@ def test_k6_runner_rejects_unconfirmed_chat_without_exposing_secret(tmp_path: Pa
     rendered = result.stdout + result.stderr
     assert result.returncode != 0
     assert "ConfirmChatSpend" in rendered
+    assert "k6 was not found" not in rendered
+    assert SIGNING_VALUE not in rendered
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason="PowerShell 7 is required for the runner safety smoke")
+def test_k6_runner_requires_explicit_concurrency_contract_before_resolving_k6(tmp_path: Path) -> None:
+    pwsh_executable = shutil.which("pwsh")
+    assert pwsh_executable is not None
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "ZANGPU_API_BASE_URL": "http://127.0.0.1:8080",
+            "ZANGPU_API_KEY_ID": "zpk_k6_0123456789",
+            "ZANGPU_API_SECRET": SIGNING_VALUE,
+            "ZANGPU_LOAD_MODEL": "zangpu-test",
+        }
+    )
+    result = subprocess.run(  # noqa: S603 - explicit PowerShell executable and repository script
+        [
+            pwsh_executable,
+            "-NoProfile",
+            "-File",
+            str(RUNNER),
+            "-Profile",
+            "concurrency",
+            "-Target",
+            "chat",
+            "-ConfirmChatSpend",
+            "-K6Exe",
+            str(tmp_path / "missing-k6.exe"),
+        ],
+        check=False,
+        capture_output=True,
+        encoding="utf-8",
+        env=environment,
+        timeout=10,
+    )
+
+    rendered = result.stdout + result.stderr
+    assert result.returncode != 0
+    assert "ExpectedConcurrencyLimit" in rendered
     assert "k6 was not found" not in rendered
     assert SIGNING_VALUE not in rendered
 
@@ -251,5 +302,131 @@ def test_k6_script_sends_unique_valid_signatures_and_sanitized_summary(tmp_path:
     rendered = result.stdout + result.stderr + summary_json.read_text(encoding="utf-8") + summary_text.read_text(
         encoding="utf-8"
     )
+    assert SIGNING_VALUE not in rendered
+    assert "x-zangpu-signature" not in rendered.lower()
+
+
+@pytest.mark.skipif(_k6_executable() is None, reason="k6 executable is required for concurrency acceptance")
+def test_k6_concurrency_profile_proves_exact_admission_and_stable_429(tmp_path: Path) -> None:
+    k6_executable = _k6_executable()
+    assert k6_executable is not None
+    failures: list[str] = []
+    nonces: set[str] = set()
+    request_ids: set[str] = set()
+    lock = threading.Lock()
+    release_admitted = threading.Event()
+    limit = 2
+    attempts = 5
+    active = 0
+    active_peak = 0
+    admitted = 0
+    rejected = 0
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            nonlocal active, active_peak, admitted, rejected
+            try:
+                body = self.rfile.read(int(self.headers["content-length"]))
+                canonical = create_canonical_request(
+                    method="POST",
+                    raw_path=self.path,
+                    raw_query="",
+                    body_hash=body_sha256_hex(body),
+                    key_id=self.headers["x-zangpu-key"],
+                    timestamp=self.headers["x-zangpu-timestamp"],
+                    nonce=self.headers["x-zangpu-nonce"],
+                    request_id=self.headers["x-zangpu-request-id"],
+                )
+                assert verify_signature(SIGNING_VALUE, canonical, self.headers["x-zangpu-signature"])
+                with lock:
+                    assert self.headers["x-zangpu-nonce"] not in nonces
+                    assert self.headers["x-zangpu-request-id"] not in request_ids
+                    nonces.add(self.headers["x-zangpu-nonce"])
+                    request_ids.add(self.headers["x-zangpu-request-id"])
+                    if active >= limit:
+                        rejected += 1
+                        is_rejected = True
+                        if rejected == attempts - limit:
+                            release_admitted.set()
+                    else:
+                        active += 1
+                        admitted += 1
+                        active_peak = max(active_peak, active)
+                        is_rejected = False
+            except Exception as exc:
+                failures.append(type(exc).__name__)
+                self.send_response(401)
+                self.end_headers()
+                return
+
+            if is_rejected:
+                payload = json.dumps({"error": {"code": "CONCURRENCY_LIMITED"}}).encode()
+                self.send_response(429)
+                self.send_header("retry-after", "60")
+            else:
+                release_admitted.wait(timeout=2)
+                time.sleep(0.05)
+                with lock:
+                    active -= 1
+                payload = json.dumps({"id": "chatcmpl-loopback", "usage": {"total_tokens": 1}}).encode()
+                self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(payload)))
+            self.send_header("x-zangpu-request-id", f"srv_{len(request_ids):032d}")
+            self.send_header("x-concurrency-limit", str(limit))
+            self.send_header("x-concurrency-remaining", "0")
+            self.send_header("x-concurrency-reset", str(int(time.time()) + 60))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, _format: str, *_args: object) -> None:
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    summary_json = tmp_path / "concurrency-summary.json"
+    summary_text = tmp_path / "concurrency-summary.txt"
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "ZANGPU_API_BASE_URL": f"http://127.0.0.1:{server.server_port}",
+            "ZANGPU_API_KEY_ID": "zpk_k6_0123456789",
+            "ZANGPU_API_SECRET": SIGNING_VALUE,
+            "ZANGPU_LOAD_TARGET": "chat",
+            "ZANGPU_LOAD_PROFILE": "concurrency",
+            "ZANGPU_LOAD_CONFIRM_CHAT": "YES",
+            "ZANGPU_LOAD_MODEL": "zangpu-test",
+            "ZANGPU_LOAD_EXPECTED_CONCURRENCY_LIMIT": str(limit),
+            "ZANGPU_LOAD_CONCURRENCY_ATTEMPTS": str(attempts),
+            "ZANGPU_LOAD_SUMMARY_JSON": str(summary_json),
+            "ZANGPU_LOAD_SUMMARY_TEXT": str(summary_text),
+        }
+    )
+    try:
+        result = subprocess.run(  # noqa: S603 - explicit official k6 executable and loopback server
+            [k6_executable, "run", "--quiet", str(SCRIPT)],
+            check=False,
+            capture_output=True,
+            env=environment,
+            text=True,
+            timeout=30,
+        )
+    finally:
+        release_admitted.set()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    assert result.returncode == 0, result.stderr
+    assert failures == []
+    assert (admitted, rejected, active_peak) == (limit, attempts - limit, limit)
+    assert len(nonces) == len(request_ids) == attempts
+    summary = json.loads(summary_json.read_text(encoding="utf-8"))
+    assert summary["profile"] == "concurrency"
+    assert summary["metrics"]["concurrency_admitted"]["count"] == limit
+    assert summary["metrics"]["concurrency_limited"]["count"] == attempts - limit
+    assert summary["thresholds_passed"] is True
+    rendered = result.stdout + result.stderr + summary_json.read_text(encoding="utf-8")
     assert SIGNING_VALUE not in rendered
     assert "x-zangpu-signature" not in rendered.lower()

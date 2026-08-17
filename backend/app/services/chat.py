@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator, Callable
-from dataclasses import dataclass
+from collections.abc import AsyncIterator, Awaitable, Callable
+from dataclasses import dataclass, field
 from time import monotonic, monotonic_ns, time
-from typing import Literal
+from typing import Literal, TypeVar
 
 from sqlalchemy.orm import Session, sessionmaker
 from starlette.concurrency import run_in_threadpool
@@ -41,6 +41,7 @@ from backend.app.services.streaming import OpenAIStreamDecoder
 
 SSE_HEARTBEAT = b": heartbeat\n\n"
 SSE_DONE = b"data: [DONE]\n\n"
+_ResultT = TypeVar("_ResultT")
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +67,7 @@ class _ChatAdmission:
     server_request_id: str
     qps: QpsDecision
     concurrency: ConcurrencyDecision
+    lease: _ConcurrencyLeaseGuard
     headers: dict[str, str]
     settlement_id: str
     usage_operation_id: str
@@ -77,6 +79,66 @@ def rate_limit_headers(decision: QpsDecision) -> dict[str, str]:
         "X-RateLimit-Remaining": str(decision.remaining),
         "X-RateLimit-Reset": str((decision.reset_at_ms + 999) // 1_000),
     }
+
+
+def concurrency_limit_headers(decision: ConcurrencyDecision) -> dict[str, str]:
+    headers = {
+        "X-Concurrency-Limit": str(decision.limit),
+        "X-Concurrency-Remaining": str(decision.remaining),
+        "X-Concurrency-Reset": str((decision.lease_expires_at_ms + 999) // 1_000),
+    }
+    if not decision.allowed:
+        headers["Retry-After"] = str(
+            max((decision.lease_expires_at_ms - decision.observed_at_ms + 999) // 1_000, 1)
+        )
+    return headers
+
+
+@dataclass(slots=True)
+class _ConcurrencyLeaseGuard:
+    limiter: ConcurrencyLimiter
+    api_client_id: str
+    operation_id: str
+    heartbeat_interval_seconds: float
+    monotonic_seconds: Callable[[], float]
+    _next_heartbeat_at: float = field(init=False)
+
+    def __post_init__(self) -> None:
+        self._next_heartbeat_at = self.monotonic_seconds() + self.heartbeat_interval_seconds
+
+    def seconds_until_heartbeat(self, *, observed_at: float | None = None) -> float:
+        now = self.monotonic_seconds() if observed_at is None else observed_at
+        return max(self._next_heartbeat_at - now, 0.0)
+
+    def heartbeat_due(self, *, observed_at: float | None = None) -> bool:
+        now = self.monotonic_seconds() if observed_at is None else observed_at
+        return now >= self._next_heartbeat_at
+
+    async def heartbeat(self) -> None:
+        renewed = await self.limiter.heartbeat(
+            api_client_id=self.api_client_id,
+            operation_id=self.operation_id,
+        )
+        if not renewed:
+            raise ControlPlaneUnavailable
+        self._next_heartbeat_at = self.monotonic_seconds() + self.heartbeat_interval_seconds
+
+    async def run(self, awaitable: Awaitable[_ResultT]) -> _ResultT:
+        task = asyncio.ensure_future(awaitable)
+        try:
+            while True:
+                completed, _ = await asyncio.wait(
+                    {task},
+                    timeout=self.seconds_until_heartbeat(),
+                )
+                if completed:
+                    return task.result()
+                await self.heartbeat()
+        except BaseException:
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            raise
 
 
 def _caller_policy_error(error: CallerPolicyError) -> str:
@@ -343,8 +405,16 @@ class ExternalChatService:
             operation_id=operation_id,
             limit=policy.concurrency_limit,
         )
+        headers.update(concurrency_limit_headers(concurrency))
         if not concurrency.allowed:
             raise ExternalApiError("CONCURRENCY_LIMITED", headers=headers)
+        lease = _ConcurrencyLeaseGuard(
+            limiter=self._concurrency_limiter,
+            api_client_id=caller.api_client_id,
+            operation_id=operation_id,
+            heartbeat_interval_seconds=self._heartbeat_interval_seconds,
+            monotonic_seconds=self._monotonic_seconds,
+        )
 
         terminal_committed = False
         try:
@@ -357,15 +427,17 @@ class ExternalChatService:
                 raise ExternalApiError(exc.code, headers=headers) from exc
             reserved_tokens = estimate_prompt_tokens(request) + admitted_output_tokens
             try:
-                await run_in_threadpool(
-                    self._reserve_quota,
-                    caller=caller,
-                    operation_id=operation_id,
-                    request_fingerprint=request_fingerprint,
-                    model_id=request.model,
-                    stream=False,
-                    reserved_tokens=reserved_tokens,
-                    now=operation_started_at,
+                await lease.run(
+                    run_in_threadpool(
+                        self._reserve_quota,
+                        caller=caller,
+                        operation_id=operation_id,
+                        request_fingerprint=request_fingerprint,
+                        model_id=request.model,
+                        stream=False,
+                        reserved_tokens=reserved_tokens,
+                        now=operation_started_at,
+                    )
                 )
             except QuotaAdmissionError as exc:
                 raise ExternalApiError(
@@ -375,28 +447,32 @@ class ExternalChatService:
                 ) from exc
 
             try:
-                credit = await self._openwebui.reserve_operation(
-                    operation_id=operation_id,
-                    service_user_id=policy.service_user_id,
-                    model_id=request.model,
-                    provider="bifrost",
+                credit = await lease.run(
+                    self._openwebui.reserve_operation(
+                        operation_id=operation_id,
+                        service_user_id=policy.service_user_id,
+                        model_id=request.model,
+                        provider="bifrost",
+                    )
                 )
             except OpenWebUIUpstreamError as exc:
                 public_code = _credit_error(exc)
                 if public_code in {"CREDIT_BALANCE_EXHAUSTED", "CREDIT_ACCOUNT_FROZEN"}:
-                    await run_in_threadpool(
-                        self._terminalize,
-                        operation_id=operation_id,
-                        operation_started_at=operation_started_at,
-                        started_ns=started_ns,
-                        server_request_id=server_request_id,
-                        qps=qps,
-                        concurrency=concurrency,
-                        status="rejected",
-                        outcome="rejected",
-                        stage="credit",
-                        code=public_code,
-                        charged_micro=0,
+                    await lease.run(
+                        run_in_threadpool(
+                            self._terminalize,
+                            operation_id=operation_id,
+                            operation_started_at=operation_started_at,
+                            started_ns=started_ns,
+                            server_request_id=server_request_id,
+                            qps=qps,
+                            concurrency=concurrency,
+                            status="rejected",
+                            outcome="rejected",
+                            stage="credit",
+                            code=public_code,
+                            charged_micro=0,
+                        )
                     )
                     terminal_committed = True
                 raise ExternalApiError(public_code, operation_id=operation_id, headers=headers) from exc
@@ -413,25 +489,31 @@ class ExternalChatService:
             ):
                 raise ExternalApiError("CONTROL_PLANE_UNAVAILABLE", operation_id=operation_id, headers=headers)
             settlement_id = str(credit.settlement_id)
-            await run_in_threadpool(
-                self._record_credit,
-                operation_id=operation_id,
-                settlement_id=settlement_id,
-                usage_operation_id=str(usage_operation_id),
-                now=max(int(time()), operation_started_at),
+            await lease.run(
+                run_in_threadpool(
+                    self._record_credit,
+                    operation_id=operation_id,
+                    settlement_id=settlement_id,
+                    usage_operation_id=str(usage_operation_id),
+                    now=max(int(time()), operation_started_at),
+                )
             )
 
             try:
-                response = await self._bifrost.forward_chat_completion(
-                    request.bifrost_payload(),
-                    virtual_key=policy.bifrost_virtual_key,
+                response = await lease.run(
+                    self._bifrost.forward_chat_completion(
+                        request.bifrost_payload(),
+                        virtual_key=policy.bifrost_virtual_key,
+                    )
                 )
             except BifrostUpstreamError as exc:
                 public_code = _provider_error(exc)
                 try:
-                    cancelled = await self._openwebui.cancel_operation(
-                        operation_id=operation_id,
-                        service_user_id=policy.service_user_id,
+                    cancelled = await lease.run(
+                        self._openwebui.cancel_operation(
+                            operation_id=operation_id,
+                            service_user_id=policy.service_user_id,
+                        )
                     )
                 except OpenWebUIUpstreamError as credit_exc:
                     raise ExternalApiError(
@@ -457,37 +539,43 @@ class ExternalChatService:
                         operation_id=operation_id,
                         headers=headers,
                     ) from exc
-                await run_in_threadpool(
-                    self._terminalize,
-                    operation_id=operation_id,
-                    operation_started_at=operation_started_at,
-                    started_ns=started_ns,
-                    server_request_id=server_request_id,
-                    qps=qps,
-                    concurrency=concurrency,
-                    status="rejected",
-                    outcome="provider_error",
-                    stage="provider",
-                    code=public_code,
-                    charged_micro=0,
+                await lease.run(
+                    run_in_threadpool(
+                        self._terminalize,
+                        operation_id=operation_id,
+                        operation_started_at=operation_started_at,
+                        started_ns=started_ns,
+                        server_request_id=server_request_id,
+                        qps=qps,
+                        concurrency=concurrency,
+                        status="rejected",
+                        outcome="provider_error",
+                        stage="provider",
+                        code=public_code,
+                        charged_micro=0,
+                    )
                 )
                 terminal_committed = True
                 raise ExternalApiError(public_code, operation_id=operation_id, headers=headers) from exc
 
             usage = response.usage
-            await run_in_threadpool(
-                self._record_usage,
-                operation_id=operation_id,
-                prompt_tokens=usage.prompt_tokens,
-                completion_tokens=usage.completion_tokens,
-                now=max(int(time()), operation_started_at),
-            )
-            try:
-                settled = await self._openwebui.settle_operation(
+            await lease.run(
+                run_in_threadpool(
+                    self._record_usage,
                     operation_id=operation_id,
-                    service_user_id=policy.service_user_id,
                     prompt_tokens=usage.prompt_tokens,
                     completion_tokens=usage.completion_tokens,
+                    now=max(int(time()), operation_started_at),
+                )
+            )
+            try:
+                settled = await lease.run(
+                    self._openwebui.settle_operation(
+                        operation_id=operation_id,
+                        service_user_id=policy.service_user_id,
+                        prompt_tokens=usage.prompt_tokens,
+                        completion_tokens=usage.completion_tokens,
+                    )
                 )
             except OpenWebUIUpstreamError as exc:
                 raise ExternalApiError(
@@ -509,19 +597,21 @@ class ExternalChatService:
             ):
                 raise ExternalApiError("CONTROL_PLANE_UNAVAILABLE", operation_id=operation_id, headers=headers)
 
-            await run_in_threadpool(
-                self._terminalize,
-                operation_id=operation_id,
-                operation_started_at=operation_started_at,
-                started_ns=started_ns,
-                server_request_id=server_request_id,
-                qps=qps,
-                concurrency=concurrency,
-                status="completed",
-                outcome="success",
-                stage="response",
-                code="OK",
-                charged_micro=settled.charged_micro,
+            await lease.run(
+                run_in_threadpool(
+                    self._terminalize,
+                    operation_id=operation_id,
+                    operation_started_at=operation_started_at,
+                    started_ns=started_ns,
+                    server_request_id=server_request_id,
+                    qps=qps,
+                    concurrency=concurrency,
+                    status="completed",
+                    outcome="success",
+                    stage="response",
+                    code="OK",
+                    charged_micro=settled.charged_micro,
+                )
             )
             terminal_committed = True
             return ExternalChatResult(response=response, rate_limit_headers=headers)
@@ -580,8 +670,16 @@ class ExternalChatService:
             operation_id=operation_id,
             limit=policy.concurrency_limit,
         )
+        headers.update(concurrency_limit_headers(concurrency))
         if not concurrency.allowed:
             raise ExternalApiError("CONCURRENCY_LIMITED", headers=headers)
+        lease = _ConcurrencyLeaseGuard(
+            limiter=self._concurrency_limiter,
+            api_client_id=caller.api_client_id,
+            operation_id=operation_id,
+            heartbeat_interval_seconds=self._heartbeat_interval_seconds,
+            monotonic_seconds=self._monotonic_seconds,
+        )
 
         terminal_committed = False
         try:
@@ -594,15 +692,17 @@ class ExternalChatService:
                 raise ExternalApiError(exc.code, headers=headers) from exc
             reserved_tokens = estimate_prompt_tokens(request) + admitted_output_tokens
             try:
-                await run_in_threadpool(
-                    self._reserve_quota,
-                    caller=caller,
-                    operation_id=operation_id,
-                    request_fingerprint=request_fingerprint,
-                    model_id=request.model,
-                    stream=True,
-                    reserved_tokens=reserved_tokens,
-                    now=operation_started_at,
+                await lease.run(
+                    run_in_threadpool(
+                        self._reserve_quota,
+                        caller=caller,
+                        operation_id=operation_id,
+                        request_fingerprint=request_fingerprint,
+                        model_id=request.model,
+                        stream=True,
+                        reserved_tokens=reserved_tokens,
+                        now=operation_started_at,
+                    )
                 )
             except QuotaAdmissionError as exc:
                 raise ExternalApiError(
@@ -612,28 +712,32 @@ class ExternalChatService:
                 ) from exc
 
             try:
-                credit = await self._openwebui.reserve_operation(
-                    operation_id=operation_id,
-                    service_user_id=policy.service_user_id,
-                    model_id=request.model,
-                    provider="bifrost",
+                credit = await lease.run(
+                    self._openwebui.reserve_operation(
+                        operation_id=operation_id,
+                        service_user_id=policy.service_user_id,
+                        model_id=request.model,
+                        provider="bifrost",
+                    )
                 )
             except OpenWebUIUpstreamError as exc:
                 public_code = _credit_error(exc)
                 if public_code in {"CREDIT_BALANCE_EXHAUSTED", "CREDIT_ACCOUNT_FROZEN"}:
-                    await run_in_threadpool(
-                        self._terminalize,
-                        operation_id=operation_id,
-                        operation_started_at=operation_started_at,
-                        started_ns=started_ns,
-                        server_request_id=server_request_id,
-                        qps=qps,
-                        concurrency=concurrency,
-                        status="rejected",
-                        outcome="rejected",
-                        stage="credit",
-                        code=public_code,
-                        charged_micro=0,
+                    await lease.run(
+                        run_in_threadpool(
+                            self._terminalize,
+                            operation_id=operation_id,
+                            operation_started_at=operation_started_at,
+                            started_ns=started_ns,
+                            server_request_id=server_request_id,
+                            qps=qps,
+                            concurrency=concurrency,
+                            status="rejected",
+                            outcome="rejected",
+                            stage="credit",
+                            code=public_code,
+                            charged_micro=0,
+                        )
                     )
                     terminal_committed = True
                 raise ExternalApiError(public_code, operation_id=operation_id, headers=headers) from exc
@@ -650,12 +754,14 @@ class ExternalChatService:
             ):
                 raise ExternalApiError("CONTROL_PLANE_UNAVAILABLE", operation_id=operation_id, headers=headers)
             settlement_id = str(credit.settlement_id)
-            await run_in_threadpool(
-                self._record_credit,
-                operation_id=operation_id,
-                settlement_id=settlement_id,
-                usage_operation_id=str(usage_operation_id),
-                now=max(int(time()), operation_started_at),
+            await lease.run(
+                run_in_threadpool(
+                    self._record_credit,
+                    operation_id=operation_id,
+                    settlement_id=settlement_id,
+                    usage_operation_id=str(usage_operation_id),
+                    now=max(int(time()), operation_started_at),
+                )
             )
             admission = _ChatAdmission(
                 request=request,
@@ -667,6 +773,7 @@ class ExternalChatService:
                 server_request_id=server_request_id,
                 qps=qps,
                 concurrency=concurrency,
+                lease=lease,
                 headers=headers,
                 settlement_id=settlement_id,
                 usage_operation_id=expected_usage_operation_id,
@@ -800,12 +907,7 @@ class ExternalChatService:
         return True
 
     async def _heartbeat_stream(self, admission: _ChatAdmission) -> None:
-        renewed = await self._concurrency_limiter.heartbeat(
-            api_client_id=admission.caller.api_client_id,
-            operation_id=admission.operation_id,
-        )
-        if not renewed:
-            raise ControlPlaneUnavailable
+        await admission.lease.heartbeat()
         touched = await run_in_threadpool(
             self._touch_operation,
             operation_id=admission.operation_id,
@@ -822,12 +924,11 @@ class ExternalChatService:
         ).__aiter__()
         pending: asyncio.Task[bytes] | None = None
         terminal_committed = False
-        next_heartbeat_at = self._monotonic_seconds() + self._heartbeat_interval_seconds
         try:
             while True:
                 if pending is None:
                     pending = asyncio.create_task(anext(upstream))
-                heartbeat_wait = max(next_heartbeat_at - self._monotonic_seconds(), 0.0)
+                heartbeat_wait = admission.lease.seconds_until_heartbeat()
                 completed, _ = await asyncio.wait(
                     {pending},
                     timeout=heartbeat_wait,
@@ -835,12 +936,10 @@ class ExternalChatService:
                 observed_at = self._monotonic_seconds()
                 if not completed:
                     await self._heartbeat_stream(admission)
-                    next_heartbeat_at = observed_at + self._heartbeat_interval_seconds
                     yield SSE_HEARTBEAT
                     continue
-                if observed_at >= next_heartbeat_at:
+                if admission.lease.heartbeat_due(observed_at=observed_at):
                     await self._heartbeat_stream(admission)
-                    next_heartbeat_at = observed_at + self._heartbeat_interval_seconds
                     yield SSE_HEARTBEAT
                 try:
                     chunk = pending.result()

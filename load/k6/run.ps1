@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [ValidateSet("smoke", "steady", "burst")]
+    [ValidateSet("smoke", "steady", "burst", "concurrency")]
     [string]$Profile = "smoke",
 
     [Parameter()]
@@ -18,6 +18,14 @@ param(
 
     [Parameter()]
     [switch]$ConfirmChatSpend,
+
+    [Parameter()]
+    [ValidateRange(1, 10000)]
+    [int]$ExpectedConcurrencyLimit,
+
+    [Parameter()]
+    [ValidateRange(2, 10000)]
+    [int]$ConcurrencyAttempts,
 
     [Parameter()]
     [string]$OutputDirectory,
@@ -39,6 +47,18 @@ if ($Target -eq "chat" -and -not $ConfirmChatSpend) {
 }
 if ($Target -eq "chat" -and [string]::IsNullOrWhiteSpace($env:ZANGPU_LOAD_MODEL)) {
     throw "ZANGPU_LOAD_MODEL is required for chat load."
+}
+if ($Profile -eq "concurrency" -and $Target -ne "chat") {
+    throw "Concurrency profile requires -Target chat."
+}
+if ($Profile -eq "concurrency" -and -not $PSBoundParameters.ContainsKey("ExpectedConcurrencyLimit")) {
+    throw "Concurrency profile requires -ExpectedConcurrencyLimit."
+}
+if ($Profile -eq "concurrency" -and -not $PSBoundParameters.ContainsKey("ConcurrencyAttempts")) {
+    throw "Concurrency profile requires -ConcurrencyAttempts."
+}
+if ($Profile -eq "concurrency" -and $ConcurrencyAttempts -le $ExpectedConcurrencyLimit) {
+    throw "ConcurrencyAttempts must exceed ExpectedConcurrencyLimit."
 }
 
 if ([string]::IsNullOrWhiteSpace($K6Exe)) {
@@ -72,6 +92,14 @@ if ($PSBoundParameters.ContainsKey("P95Milliseconds")) {
 }
 if ($ConfirmChatSpend) {
     $overrides.ZANGPU_LOAD_CONFIRM_CHAT = "YES"
+}
+if ($Profile -eq "concurrency") {
+    $overrides.ZANGPU_LOAD_EXPECTED_CONCURRENCY_LIMIT = $ExpectedConcurrencyLimit.ToString(
+        [Globalization.CultureInfo]::InvariantCulture
+    )
+    $overrides.ZANGPU_LOAD_CONCURRENCY_ATTEMPTS = $ConcurrencyAttempts.ToString(
+        [Globalization.CultureInfo]::InvariantCulture
+    )
 }
 
 $previous = @{}

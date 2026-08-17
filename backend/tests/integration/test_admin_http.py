@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import json
 
@@ -173,6 +174,16 @@ def test_admin_http_session_and_caller_lifecycle(monkeypatch: pytest.MonkeyPatch
         created_payload = created.json()
         client_id = created_payload["client"]["id"]
         first_secret = created_payload["secret"]
+        idle_concurrency = client.get(f"/api/v1/admin/callers/{client_id}/concurrency")
+        asyncio.run(
+            application.state.concurrency_limiter.acquire(
+                api_client_id=client_id,
+                operation_id="admin-http-observation-operation",
+                limit=2,
+            )
+        )
+        active_concurrency = client.get(f"/api/v1/admin/callers/{client_id}/concurrency")
+        missing_concurrency = client.get("/api/v1/admin/callers/00000000-0000-4000-8000-000000000000/concurrency")
         replay_payload = caller_payload()
         replay_payload["name"] = "另一个调用方"
         replayed = client.post(
@@ -217,8 +228,34 @@ def test_admin_http_session_and_caller_lifecycle(monkeypatch: pytest.MonkeyPatch
     assert "admin-login-token" not in repr(login.json())
     assert (no_csrf.status_code, no_csrf.json()["error"]["code"]) == (403, "ADMIN_CSRF_FAILED")
     assert created.status_code == 201 and first_secret.startswith("zps_")
+    assert idle_concurrency.status_code == 200
+    assert idle_concurrency.json() == {
+        "api_client_id": client_id,
+        "configured_limit": 2,
+        "occupied": 0,
+        "available": 2,
+        "state": "idle",
+        "observed_at_ms": idle_concurrency.json()["observed_at_ms"],
+        "next_lease_expires_at_ms": idle_concurrency.json()["observed_at_ms"],
+        "last_lease_expires_at_ms": idle_concurrency.json()["observed_at_ms"],
+    }
+    assert active_concurrency.status_code == 200
+    assert active_concurrency.json()["api_client_id"] == client_id
+    assert active_concurrency.json()["configured_limit"] == 2
+    assert active_concurrency.json()["occupied"] == 1
+    assert active_concurrency.json()["available"] == 1
+    assert active_concurrency.json()["state"] == "available"
+    assert active_concurrency.json()["next_lease_expires_at_ms"] > active_concurrency.json()["observed_at_ms"]
+    assert (missing_concurrency.status_code, missing_concurrency.json()["error"]["code"]) == (
+        404,
+        "ADMIN_CALLER_NOT_FOUND",
+    )
     assert (replayed.status_code, replayed.json()["error"]["code"]) == (409, "ADMIN_CONFLICT")
     assert listed.status_code == 200 and len(listed.json()["items"]) == 1
+    assert listed.json()["items"][0]["id"] == client_id
+    assert "client" not in listed.json()["items"][0]
+    assert "credentials" not in listed.json()["items"][0]
+    assert "binding" not in listed.json()["items"][0]
     assert detail.status_code == 200
     assert "secret" not in repr(detail.json()).lower()
     assert "ciphertext" not in repr(detail.json()).lower()

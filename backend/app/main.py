@@ -113,15 +113,17 @@ def create_app(
                 ttl_seconds=active_settings.contract_api_nonce_ttl_seconds,
             )
             qps_limiter = SlidingWindowQps(redis_client)
+            concurrency_limiter = ConcurrencyLimiter(
+                redis_client,
+                lease_seconds=active_settings.contract_api_concurrency_lease_seconds,
+            )
+            app.state.concurrency_limiter = concurrency_limiter
             app.state.external_chat_service = ExternalChatService(
                 sessions=database_runtime.sessions,
                 keyring=app.state.credential_keyring,
                 nonce_guard=nonce_guard,
                 qps_limiter=qps_limiter,
-                concurrency_limiter=ConcurrencyLimiter(
-                    redis_client,
-                    lease_seconds=active_settings.contract_api_concurrency_lease_seconds,
-                ),
+                concurrency_limiter=concurrency_limiter,
                 bifrost=bifrost_client,
                 openwebui=openwebui_client,
                 global_max_output_tokens=active_settings.contract_api_max_output_tokens,

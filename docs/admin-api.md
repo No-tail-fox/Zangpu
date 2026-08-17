@@ -25,7 +25,7 @@
 
 中文管理站已接入上述会话和 caller 生命周期。登录令牌只放入 `X-Zangpu-Admin-Token` 请求头，不写入请求正文或浏览器存储；会话 Cookie 由浏览器以 HttpOnly 方式管理，CSRF Token 仅保留在当前页面内存。`401` 会清空页面状态并返回登录入口；网络登出失败时页面不会假装会话已经清除。
 
-管理站支持调用方列表、创建、详情、绑定同步状态、权限/配额编辑、凭据轮换/撤销和调用方禁用。创建/轮换得到的 Secret 只在确认框显示一次，操作员明确确认已安全保存后才可关闭；关闭时页面立即清除 Secret 状态。管理站不读取积分余额，不直接调用 Open WebUI 或 Bifrost，也不把本地提交误报为远端同步完成。
+管理站支持调用方列表、创建、详情、绑定同步状态、权限/配额编辑、实时并发占用、凭据轮换/撤销和调用方禁用。创建/轮换得到的 Secret 只在确认框显示一次，操作员明确确认已安全保存后才可关闭；关闭时页面立即清除 Secret 状态。管理站不读取积分余额，不直接调用 Open WebUI 或 Bifrost，也不把本地提交误报为远端同步完成。
 
 ## 接口清单
 
@@ -37,6 +37,7 @@
 | `GET` | `/api/v1/admin/callers` | 分页列出调用方 |
 | `POST` | `/api/v1/admin/callers` | 创建调用方、初始凭据和 Bifrost 同步任务 |
 | `GET` | `/api/v1/admin/callers/{client_id}` | 读取调用方、凭据摘要和绑定状态 |
+| `GET` | `/api/v1/admin/callers/{client_id}/concurrency` | 读取当前并发占用、可用名额和租约到期聚合 |
 | `PATCH` | `/api/v1/admin/callers/{client_id}` | 按版本更新权限和配额 |
 | `POST` | `/api/v1/admin/callers/{client_id}/credentials/rotate` | 轮换凭据并撤销旧凭据 |
 | `POST` | `/api/v1/admin/callers/{client_id}/credentials/{credential_id}/revoke` | 单独撤销凭据 |
@@ -86,6 +87,12 @@
 管理员审计只记录操作人、目标、动作、变更字段和脱敏前后摘要。它不记录登录令牌、会话 Cookie、CSRF Token、caller Secret、Bifrost Key、签名、nonce、请求正文或原始上游错误。
 
 Open WebUI 仍是积分余额和流水的唯一权威；管理员 caller API 不读取或修改积分表。
+
+## 实时并发
+
+`GET /callers/{client_id}/concurrency` 先从 PostgreSQL 读取调用方和当前 `concurrency_limit`，再通过与聊天准入相同的 Redis limiter 原子清理过期租约并读取聚合。响应包含配置上限、当前占用、可用名额、`idle`/`available`/`saturated` 状态、观测毫秒时间戳以及最早/最晚租约到期时间。它不返回 operation ID、Redis key/member 或其他 owner 标识。
+
+该读取不会取得并发名额、预留配额、创建 operation/event、调用 Bifrost/Open WebUI 或读取积分。Redis 不可用时返回 `503 ADMIN_CONTROL_PLANE_UNAVAILABLE`，不会用进程内计数或历史事件猜测当前占用。中文管理站独立加载这段实时状态，因此 Redis 观察失败不会遮挡调用方、凭据和绑定的 SQL 详情。
 
 ## 调用事件、统计和导出
 

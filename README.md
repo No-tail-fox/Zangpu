@@ -2,7 +2,7 @@
 
 Independent contract API management service and Chinese operator site for Zangpu. Bifrost remains an internal model gateway, while Open WebUI remains the only credit-balance authority.
 
-The administrator site now provides deployment-token login, caller inventory and creation, one-time Secret delivery, redacted credential rotation/revocation, caller disable, binding-sync visibility, endpoint/model permissions and request/Token quota editing. Browser state keeps only the session-issued CSRF value in memory; it never stores the administrator login token, caller Secret, Bifrost key material or Open WebUI balance.
+The administrator site now provides deployment-token login, caller inventory and creation, one-time Secret delivery, redacted credential rotation/revocation, caller disable, binding-sync visibility, endpoint/model permissions, request/Token quota editing and live concurrency occupancy. Browser state keeps only the session-issued CSRF value in memory; it never stores the administrator login token, caller Secret, Bifrost key material or Open WebUI balance.
 
 ## Local Gates
 
@@ -34,7 +34,7 @@ The independent administrator session, caller/credential lifecycle, permission/q
 
 ## Load Acceptance
 
-The dependency-free signed k6 script, PowerShell runner, configurable smoke/steady/burst profiles and Chinese result workflow are documented in [`docs/load-testing.md`](docs/load-testing.md). Metadata load is the safe default; chat load requires explicit credit-spend confirmation. Generated summaries are aggregate-only and belong under the ignored `.tmp/k6-results` directory.
+The dependency-free signed k6 script, PowerShell runner, configurable smoke/steady/burst/concurrency profiles and Chinese result workflow are documented in [`docs/load-testing.md`](docs/load-testing.md). Metadata load is the safe default; chat and exact concurrency acceptance require explicit credit-spend confirmation. Generated summaries are aggregate-only and belong under the ignored `.tmp/k6-results` directory.
 
 ## Database Migrations
 
@@ -55,7 +55,7 @@ Retention defaults are 180 days for terminal events, 730 days for administrator 
 
 Distributed-control defaults are a 300-second timestamp tolerance, 600-second nonce TTL, 60-second concurrency lease and 15-second heartbeat. The corresponding `ZANGPU_CONTRACT_API_*` settings are bounded; nonce TTL must be at least twice the timestamp tolerance and heartbeat must stay below half the lease.
 
-`POST /api/v1/external/chat/completions` is the signed caller route for both bounded JSON and SSE responses. It enforces a 1 MiB body cap and the smaller of the caller output limit and `ZANGPU_CONTRACT_API_MAX_OUTPUT_TOKENS` (default `4096`). Stream responses force private usage evidence, send heartbeats while waiting or receiving a long response, and do not forward `[DONE]` until credit settlement and the SQL terminal event commit. All responses carry a server `X-Zangpu-Request-Id`; successful responses also include QPS limit headers.
+`POST /api/v1/external/chat/completions` is the signed caller route for both bounded JSON and SSE responses. It enforces a 1 MiB body cap and the smaller of the caller output limit and `ZANGPU_CONTRACT_API_MAX_OUTPUT_TOKENS` (default `4096`). Non-stream and stream requests renew the exact-owner concurrency lease on an absolute schedule; losing ownership cancels in-flight work and fails closed. Stream responses force private usage evidence and do not forward `[DONE]` until credit settlement and the SQL terminal event commit. All responses carry a server `X-Zangpu-Request-Id`; admitted chat responses include QPS and concurrency headers, while saturated admission returns stable 429 plus `Retry-After`.
 
 `GET /api/v1/external/models` and `GET /api/v1/external/usage` use the same empty-body HMAC contract, nonce protection and caller QPS window. They require `models.read` and `usage.read` respectively. Models are limited to the caller's configured allow-list; usage reports only the current caller's UTC-daily and lifetime SQL quota counters and limits. The usage response does not expose or duplicate the Open WebUI credit balance. Query parameters and GET bodies are rejected.
 

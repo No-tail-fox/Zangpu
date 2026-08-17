@@ -17,7 +17,7 @@
 | PostgreSQL / Valkey 版本 | 待填写 |
 | k6 版本与二进制 SHA-256 | 待填写 |
 | 测试目标 | `models` / `usage` / `chat` |
-| Profile | `smoke` / `steady` / `burst` |
+| Profile | `smoke` / `steady` / `burst` / `concurrency` |
 | 调用方 QPS / 并发 / Token 限额 | 待填写 |
 
 ## 配置
@@ -29,6 +29,7 @@
 | 允许失败率 | 待填写 |
 | P95 上限（ms） | 待填写 |
 | 聊天模型与 max tokens | 不适用或待填写 |
+| 预期并发上限 / 总尝试数 | 不适用或待填写 |
 
 ## 聚合结果
 
@@ -42,6 +43,7 @@
 | HTTP 4xx / 5xx | 待填写 | 待判断 |
 | dropped iterations | 待填写 | 待判断 |
 | 缺失服务端 request ID | 待填写 | 待判断 |
+| concurrency admitted / limited / unexpected | 不适用或待填写 | 待判断 |
 
 ## 证据
 

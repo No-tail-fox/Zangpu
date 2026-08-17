@@ -69,3 +69,49 @@ def test_concurrency_lease_ownership_heartbeat_release_and_ttl_recovery() -> Non
     assert admitted_after_release.allowed
     assert stale.allowed and recovered.allowed
     assert all("operation-" not in value and "client-" not in value for value in redis_values)
+
+
+def test_concurrency_observation_is_atomic_aggregate_and_prunes_expired_leases() -> None:
+    async def scenario() -> tuple[object, object, object]:
+        redis = FakeRedis()
+        limiter = ConcurrencyLimiter(redis, lease_seconds=1)
+        idle = await limiter.observe(api_client_id="client-observe", limit=2)
+        await limiter.acquire(api_client_id="client-observe", operation_id="operation-a", limit=2)
+        await limiter.acquire(api_client_id="client-observe", operation_id="operation-b", limit=2)
+        saturated = await limiter.observe(api_client_id="client-observe", limit=2)
+        await asyncio.sleep(1.05)
+        recovered = await limiter.observe(api_client_id="client-observe", limit=2)
+        await redis.aclose()
+        return idle, saturated, recovered
+
+    idle, saturated, recovered = asyncio.run(scenario())
+
+    assert (idle.occupied, idle.remaining, idle.saturated) == (0, 2, False)
+    assert idle.next_lease_expires_at_ms == idle.last_lease_expires_at_ms == idle.observed_at_ms
+    assert (saturated.occupied, saturated.remaining, saturated.saturated) == (2, 0, True)
+    assert saturated.next_lease_expires_at_ms >= saturated.observed_at_ms
+    assert saturated.last_lease_expires_at_ms >= saturated.next_lease_expires_at_ms
+    assert (recovered.occupied, recovered.remaining, recovered.saturated) == (0, 2, False)
+
+
+def test_concurrent_acquire_never_overshoots_configured_limit() -> None:
+    async def scenario() -> tuple[int, int]:
+        redis = FakeRedis()
+        limiter = ConcurrencyLimiter(redis, lease_seconds=5)
+        decisions = await asyncio.gather(
+            *(
+                limiter.acquire(
+                    api_client_id="client-race",
+                    operation_id=f"operation-{index}",
+                    limit=3,
+                )
+                for index in range(32)
+            )
+        )
+        snapshot = await limiter.observe(api_client_id="client-race", limit=3)
+        await redis.aclose()
+        return sum(item.allowed for item in decisions), snapshot.occupied
+
+    allowed, occupied = asyncio.run(scenario())
+
+    assert (allowed, occupied) == (3, 3)

@@ -6,6 +6,7 @@ import {
   type AdminCallerCreateInput,
   type BindingSummary,
   type CallerCreateResult,
+  type CallerConcurrencyState,
   type CallerDetail,
   type CallerSummary,
   type CredentialSummary,
@@ -66,6 +67,17 @@ const detail: CallerDetail = {
   client: { ...caller },
   credentials: [{ ...credential }],
   binding: { ...binding },
+};
+
+const concurrency: CallerConcurrencyState = {
+  api_client_id: caller.id,
+  configured_limit: 4,
+  occupied: 3,
+  available: 1,
+  state: "available",
+  observed_at_ms: 1_800_000_200_000,
+  next_lease_expires_at_ms: 1_800_000_230_000,
+  last_lease_expires_at_ms: 1_800_000_250_000,
 };
 
 const createInput: AdminCallerCreateInput = {
@@ -151,6 +163,20 @@ describe("administrator API client", () => {
     const [disableUrl, disableInit] = fetcher.mock.calls[3];
     expect(disableUrl).toBe("/api/v1/admin/callers/caller-1/disable");
     expect(new Headers(disableInit?.headers).get("Idempotency-Key")).toBe("disable-caller-1");
+  });
+
+  it("reads live caller concurrency without CSRF or mutation headers", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(jsonResponse(concurrency));
+    const api = new AdminApiClient(fetcher, session);
+
+    await expect(api.getCallerConcurrency("caller/1")).resolves.toEqual(concurrency);
+
+    const [url, init] = fetcher.mock.calls[0];
+    const headers = new Headers(init?.headers);
+    expect(url).toBe("/api/v1/admin/callers/caller%2F1/concurrency");
+    expect(init?.method).toBe("GET");
+    expect(headers.has("X-Zangpu-CSRF")).toBe(false);
+    expect(headers.has("Idempotency-Key")).toBe(false);
   });
 
   it("surfaces bounded administrator errors without leaking response text", async () => {
