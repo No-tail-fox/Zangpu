@@ -28,7 +28,7 @@ Internet / Open WebUI / SDK
 - vLLM 负责连续批处理、KV cache 和模型执行。模型池的实际并行数必须通过目标模型和 GPU 的压测得到。
 - 出现多个 GPU 节点后，再引入 Envoy Gateway + Gateway API Inference Extension + llm-d Router；KServe 作为 Kubernetes 运维和自动伸缩层的可选组合。
 
-这意味着“200 人在线”可以先实现；“200 个请求同时生成”必须以硬件实测为准，不能在没有模型和 GPU 参数时承诺。
+这意味着“200 人在线”可以先作为第一阶段设计目标；是否达到必须经过 C200 真实连接验收。“200 个请求同时生成”还必须以硬件实测为准，不能在没有模型和 GPU 参数时承诺。
 
 ## 2. 三层容量定义
 
@@ -164,7 +164,7 @@ sum(stable_benchmark_sequences across healthy replicas) >= 250
 - Bifrost OSS 1 个固定实例，版本和镜像 digest 锁定。Control Plane 的 outbox 只对这一个管理端点做绑定同步。
 - vLLM 按 GPU 数量部署 1 个或多个模型副本；每个副本通过 OpenAI-compatible API 提供给模型路由。
 
-这一剖面可支持 200 个在线 HTTP/SSE 连接，但是否支持 200 个活跃生成必须由 `20 -> 50 -> 100 -> 200` 压测决定。它不宣称跨物理主机的高可用。
+这一剖面以 200 个在线 HTTP/SSE 连接为验收目标，但是否达到必须由 `20 -> 50 -> 100 -> 200` 真实压测决定；是否支持 200 个活跃生成更必须由 GPU 基准决定。它不宣称跨物理主机的高可用。
 
 ### Profile B：多 GPU / 多服务器
 
