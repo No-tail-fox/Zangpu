@@ -3,13 +3,22 @@
   admin off
 }
 
+(backend_pool) {
+  reverse_proxy backend-1:9000 backend-2:9000 backend-3:9000 backend-4:9000 {
+    lb_policy least_conn
+    health_uri /api/v1/external/health
+    health_interval 10s
+    health_timeout 3s
+  }
+}
+
 :9000 {
-  reverse_proxy backend:9000
+  import backend_pool
 }
 
 :9001 {
   handle /api/v1/admin/* {
-    reverse_proxy backend:9000
+    import backend_pool
   }
 
   handle {

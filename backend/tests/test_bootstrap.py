@@ -183,11 +183,14 @@ def test_compose_publishes_only_gateway_ports() -> None:
 
     published_services = {name for name, service in services.items() if service.get("ports")}
     assert published_services == {"gateway"}
-    assert {"backend", "web", "bifrost", "postgres", "redis"}.issubset(services)
-    for name in ("backend", "web", "bifrost", "postgres", "redis"):
+    backend_names = {f"backend-{index}" for index in range(1, 5)}
+    assert backend_names | {"web", "bifrost", "postgres", "redis"} <= services.keys()
+    assert "backend" not in services
+    for name in (*sorted(backend_names), "web", "bifrost", "postgres", "redis"):
         assert "ports" not in services[name]
 
-    backend_environment = services["backend"]["environment"]
+    backend_environment = services["backend-1"]["environment"]
+    assert all(services[name]["environment"] == backend_environment for name in backend_names)
     assert "BIFROST_MANAGEMENT_TOKEN" in backend_environment["ZANGPU_BIFROST_MANAGEMENT_TOKEN"]
     assert "BIFROST_EXPECTED_VERSION" in backend_environment["ZANGPU_BIFROST_EXPECTED_VERSION"]
     assert "OPENWEBUI_INTERNAL_BASE_URL" in backend_environment["ZANGPU_OPENWEBUI_INTERNAL_BASE_URL"]
@@ -198,15 +201,31 @@ def test_compose_publishes_only_gateway_ports() -> None:
     assert backend_environment["ZANGPU_EVENT_RETENTION_DAYS"] == "${EVENT_RETENTION_DAYS:-180}"
     assert backend_environment["ZANGPU_ADMIN_AUDIT_RETENTION_DAYS"] == "${ADMIN_AUDIT_RETENTION_DAYS:-730}"
     assert backend_environment["ZANGPU_RETENTION_BATCH_SIZE"] == "${RETENTION_BATCH_SIZE:-1000}"
+    assert "MODEL_POOL_POLICIES" in backend_environment["ZANGPU_MODEL_POOL_POLICIES"]
+    assert backend_environment["ZANGPU_CONTRACT_API_GLOBAL_QUEUE_LIMIT"] == (
+        "${CONTRACT_API_GLOBAL_QUEUE_LIMIT:-200}"
+    )
     assert "openwebui" not in services
+
+    gateway_dependencies = services["gateway"]["depends_on"]
+    assert backend_names | {"web"} == gateway_dependencies.keys()
+    assert all(gateway_dependencies[name]["condition"] == "service_healthy" for name in backend_names)
 
     published_targets = {port["target"] for port in services["gateway"]["ports"]}
     assert published_targets == {9000, 9001}
     assert all(port["host_ip"] == "127.0.0.1" for port in services["gateway"]["ports"])
 
     caddy = (ROOT / "deploy" / "Caddyfile").read_text(encoding="utf-8")
+    assert "reverse_proxy backend:9000" not in caddy
+    assert (
+        "reverse_proxy backend-1:9000 backend-2:9000 backend-3:9000 backend-4:9000" in caddy
+    )
+    assert "lb_policy least_conn" in caddy
+    assert "health_uri /api/v1/external/health" in caddy
+    assert "flush_interval -1" not in caddy
+    assert "response_buffers" not in caddy
     admin_proxy = caddy.index("handle /api/v1/admin/*")
-    backend_proxy = caddy.index("reverse_proxy backend:9000", admin_proxy)
+    backend_proxy = caddy.index("import backend_pool", admin_proxy)
     web_fallback = caddy.index("reverse_proxy web:3000", backend_proxy)
     assert admin_proxy < backend_proxy < web_fallback
 

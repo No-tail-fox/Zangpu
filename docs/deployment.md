@@ -41,6 +41,22 @@ Compose 只把 caller 端口 9000 和管理员端口 9001 绑定到 `127.0.0.1`�
 
 这些设置只冻结硬件无关的准入语义。当前工作站没有 Docker，且尚未提供目标 GPU/模型参数，因此不能据此声称真实 PostgreSQL、Valkey、Bifrost、Open WebUI 联调或 200 路活跃生成已经通过。真实验收仍需按 `20 -> 50 -> 100 -> 200` 分阶段运行连接、排队和 GPU 推理压测。
 
+## 四副本软件路径
+
+Compose 显式运行 `backend-1` 到 `backend-4` 四个 Control Plane 容器，每个容器保持一个 Uvicorn worker。它们使用相同的受控配置，共享 PostgreSQL、Valkey、单个 Bifrost OSS 和外部 Open WebUI。HMAC 调用认证与管理员签名会话都是无服务端会话状态的，Caddy 不需要粘性路由；全局 nonce、QPS、调用方并发、模型池 active lease 和等待 ticket 继续由共享 Valkey 决定。
+
+Caddy 对四个 backend 使用 `least_conn`，每 10 秒检查一次 public health。chat 流返回 `Content-Type: text/event-stream`，Caddy 会按内置 SSE 路径立即刷新且未配置 `response_buffers`；这里刻意不使用 `flush_interval -1`，因为该低延迟模式会在客户端提前断开后继续保持 backend 请求。配置没有开启负载均衡重试；一个已发送的 chat 请求不会因为切换上游而被网关静默重复提交。
+
+在有 Docker 的目标服务器上，先完成配置展开，再启动并检查全部副本：
+
+```powershell
+docker compose --env-file deploy/.env -f deploy/compose.yaml config
+docker compose --env-file deploy/.env -f deploy/compose.yaml up -d --build
+docker compose --env-file deploy/.env -f deploy/compose.yaml ps
+```
+
+`gateway`、`backend-1..4`、`web`、`postgres` 和 `redis` 必须为 healthy/ready，Bifrost 必须完成版本与安全 preflight。四个 backend 会分别建立数据库和上游 HTTP 连接池；验收时必须记录 PostgreSQL 连接峰值，超过单实例预算前引入 PgBouncer 或托管 PostgreSQL。这个四副本剖面提高 HTTP/SSE 软件路径容量，但不增加 GPU 推理槽位，也不消除单 Bifrost、单 PostgreSQL 和单 Valkey 的单服务器故障域。
+
 ## 结构检查与迁移
 
 ```powershell

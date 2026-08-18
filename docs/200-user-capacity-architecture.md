@@ -207,14 +207,15 @@ Gateway API / Envoy Gateway
 - Valkey exact-owner concurrency lease、heartbeat、release 和 fail-closed 错误处理。
 - 调用方级 `concurrency_limit`、容量响应头、饱和时的 `429`/`Retry-After`。
 - 非流式和 SSE 流式的 lease guard、断开补偿和 Open WebUI exact-once credit 生命周期。
-- 单进程 Compose 拓扑、Bifrost preflight、PostgreSQL/Valkey 私网边界和 k6 并发控制脚本。
+- 按模型 ID 映射的静态模型池容量、全局/调用方有界 FIFO ticket、绝对超时/取消和跨副本 Valkey 原子晋级。
+- 4 个显式 Control Plane 容器、Caddy `least_conn`/主动健康检查/SSE 无缓冲、Bifrost preflight、PostgreSQL/Valkey 私网边界和 k6 并发控制脚本。
 
-进入 200 用户实现前仍缺少：
+进入真实 200 用户验收前仍缺少：
 
-1. 全局队列 ticket、取消、超时、轮转公平和排队可观测性。
-2. 模型池/副本注册、容量心跳、过期剔除和 per-model active lease。
-3. 请求选择的模型池路由；当前 Bifrost 客户端只知道一个管理/推理端点。
-4. 4 副本 Control Plane 的 Compose/Kubernetes 部署、资源限制、优雅停机和代理长连接参数。
+1. 调用方轮转公平和管理员排队时间/队列深度可观测性；当前实现是全局/调用方有界 FIFO。
+2. 模型副本注册、健康心跳、过期剔除和 per-replica 容量；当前实现是部署确认的静态 per-pool active lease。
+3. 请求选择的模型池/副本路由；当前 Bifrost 客户端仍只知道一个管理/推理端点。
+4. Control Plane 资源限制、优雅停机、外层连接硬上限，以及四副本 Compose 的真实容器运行证据。
 5. vLLM `/metrics` 版本锁定、容量注册器和 Prometheus/Grafana 指标面板。
 6. PostgreSQL/Valkey/Bifrost/Open WebUI/vLLM 真实联调，以及 20/50/100/200 分阶段压测。
 

@@ -1,11 +1,63 @@
 name: zangpu-api-control-plane
 
+x-backend-service: &backend-service
+  build:
+    context: ..
+    dockerfile: backend/Dockerfile
+  restart: unless-stopped
+  environment:
+    ZANGPU_ENVIRONMENT: production
+    ZANGPU_SERVICE_VERSION: 0.1.0
+    ZANGPU_DATABASE_URL: postgresql+psycopg://control:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/control
+    ZANGPU_REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD}@redis:6379/0
+    ZANGPU_BIFROST_BASE_URL: http://bifrost:8080
+    ZANGPU_BIFROST_MANAGEMENT_TOKEN: ${BIFROST_MANAGEMENT_TOKEN:?Set BIFROST_MANAGEMENT_TOKEN}
+    ZANGPU_BIFROST_EXPECTED_VERSION: ${BIFROST_EXPECTED_VERSION:?Set BIFROST_EXPECTED_VERSION}
+    ZANGPU_OPENWEBUI_INTERNAL_BASE_URL: ${OPENWEBUI_INTERNAL_BASE_URL:?Set OPENWEBUI_INTERNAL_BASE_URL}
+    ZANGPU_OPENWEBUI_INTERNAL_SERVICE_ID: ${OPENWEBUI_INTERNAL_SERVICE_ID:?Set OPENWEBUI_INTERNAL_SERVICE_ID}
+    ZANGPU_OPENWEBUI_INTERNAL_SERVICE_SECRET: ${OPENWEBUI_INTERNAL_SERVICE_SECRET:?Set OPENWEBUI_INTERNAL_SERVICE_SECRET}
+    ZANGPU_ADMIN_SESSION_SECRET: ${ADMIN_SESSION_SECRET:?Set ADMIN_SESSION_SECRET}
+    ZANGPU_ADMIN_LOGIN_TOKEN: ${ADMIN_LOGIN_TOKEN:?Set ADMIN_LOGIN_TOKEN}
+    ZANGPU_EVENT_RETENTION_DAYS: ${EVENT_RETENTION_DAYS:-180}
+    ZANGPU_ADMIN_AUDIT_RETENTION_DAYS: ${ADMIN_AUDIT_RETENTION_DAYS:-730}
+    ZANGPU_RETENTION_BATCH_SIZE: ${RETENTION_BATCH_SIZE:-1000}
+    ZANGPU_API_CREDENTIAL_KEYS: ${API_CREDENTIAL_KEYS:?Set API_CREDENTIAL_KEYS}
+    ZANGPU_API_CREDENTIAL_ACTIVE_KEY_ID: ${API_CREDENTIAL_ACTIVE_KEY_ID:?Set API_CREDENTIAL_ACTIVE_KEY_ID}
+    ZANGPU_CONTRACT_API_MAX_OUTPUT_TOKENS: ${CONTRACT_API_MAX_OUTPUT_TOKENS:-4096}
+    ZANGPU_MODEL_POOL_POLICIES: ${MODEL_POOL_POLICIES:?Set MODEL_POOL_POLICIES}
+    ZANGPU_CONTRACT_API_GLOBAL_QUEUE_LIMIT: ${CONTRACT_API_GLOBAL_QUEUE_LIMIT:-200}
+    ZANGPU_CONTRACT_API_CALLER_QUEUE_LIMIT: ${CONTRACT_API_CALLER_QUEUE_LIMIT:-8}
+    ZANGPU_CONTRACT_API_QUEUE_WAIT_SECONDS: ${CONTRACT_API_QUEUE_WAIT_SECONDS:-30}
+    ZANGPU_CONTRACT_API_QUEUE_POLL_MILLISECONDS: ${CONTRACT_API_QUEUE_POLL_MILLISECONDS:-250}
+  expose:
+    - "9000"
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+    bifrost:
+      condition: service_started
+  healthcheck:
+    test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9000/api/v1/external/health', timeout=3)"]
+    interval: 10s
+    timeout: 5s
+    retries: 5
+  networks:
+    - private
+
 services:
   gateway:
     image: caddy:2.10.2-alpine
     restart: unless-stopped
     depends_on:
-      backend:
+      backend-1:
+        condition: service_healthy
+      backend-2:
+        condition: service_healthy
+      backend-3:
+        condition: service_healthy
+      backend-4:
         condition: service_healthy
       web:
         condition: service_healthy
@@ -24,51 +76,10 @@ services:
       - edge
       - private
 
-  backend:
-    build:
-      context: ..
-      dockerfile: backend/Dockerfile
-    restart: unless-stopped
-    environment:
-      ZANGPU_ENVIRONMENT: production
-      ZANGPU_SERVICE_VERSION: 0.1.0
-      ZANGPU_DATABASE_URL: postgresql+psycopg://control:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/control
-      ZANGPU_REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD}@redis:6379/0
-      ZANGPU_BIFROST_BASE_URL: http://bifrost:8080
-      ZANGPU_BIFROST_MANAGEMENT_TOKEN: ${BIFROST_MANAGEMENT_TOKEN:?Set BIFROST_MANAGEMENT_TOKEN}
-      ZANGPU_BIFROST_EXPECTED_VERSION: ${BIFROST_EXPECTED_VERSION:?Set BIFROST_EXPECTED_VERSION}
-      ZANGPU_OPENWEBUI_INTERNAL_BASE_URL: ${OPENWEBUI_INTERNAL_BASE_URL:?Set OPENWEBUI_INTERNAL_BASE_URL}
-      ZANGPU_OPENWEBUI_INTERNAL_SERVICE_ID: ${OPENWEBUI_INTERNAL_SERVICE_ID:?Set OPENWEBUI_INTERNAL_SERVICE_ID}
-      ZANGPU_OPENWEBUI_INTERNAL_SERVICE_SECRET: ${OPENWEBUI_INTERNAL_SERVICE_SECRET:?Set OPENWEBUI_INTERNAL_SERVICE_SECRET}
-      ZANGPU_ADMIN_SESSION_SECRET: ${ADMIN_SESSION_SECRET:?Set ADMIN_SESSION_SECRET}
-      ZANGPU_ADMIN_LOGIN_TOKEN: ${ADMIN_LOGIN_TOKEN:?Set ADMIN_LOGIN_TOKEN}
-      ZANGPU_EVENT_RETENTION_DAYS: ${EVENT_RETENTION_DAYS:-180}
-      ZANGPU_ADMIN_AUDIT_RETENTION_DAYS: ${ADMIN_AUDIT_RETENTION_DAYS:-730}
-      ZANGPU_RETENTION_BATCH_SIZE: ${RETENTION_BATCH_SIZE:-1000}
-      ZANGPU_API_CREDENTIAL_KEYS: ${API_CREDENTIAL_KEYS:?Set API_CREDENTIAL_KEYS}
-      ZANGPU_API_CREDENTIAL_ACTIVE_KEY_ID: ${API_CREDENTIAL_ACTIVE_KEY_ID:?Set API_CREDENTIAL_ACTIVE_KEY_ID}
-      ZANGPU_CONTRACT_API_MAX_OUTPUT_TOKENS: ${CONTRACT_API_MAX_OUTPUT_TOKENS:-4096}
-      ZANGPU_MODEL_POOL_POLICIES: ${MODEL_POOL_POLICIES:?Set MODEL_POOL_POLICIES}
-      ZANGPU_CONTRACT_API_GLOBAL_QUEUE_LIMIT: ${CONTRACT_API_GLOBAL_QUEUE_LIMIT:-200}
-      ZANGPU_CONTRACT_API_CALLER_QUEUE_LIMIT: ${CONTRACT_API_CALLER_QUEUE_LIMIT:-8}
-      ZANGPU_CONTRACT_API_QUEUE_WAIT_SECONDS: ${CONTRACT_API_QUEUE_WAIT_SECONDS:-30}
-      ZANGPU_CONTRACT_API_QUEUE_POLL_MILLISECONDS: ${CONTRACT_API_QUEUE_POLL_MILLISECONDS:-250}
-    expose:
-      - "9000"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      bifrost:
-        condition: service_started
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9000/api/v1/external/health', timeout=3)"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - private
+  backend-1: *backend-service
+  backend-2: *backend-service
+  backend-3: *backend-service
+  backend-4: *backend-service
 
   web:
     build:
