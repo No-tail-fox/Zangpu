@@ -7,6 +7,7 @@ from pydantic import ValidationError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from backend.app.limits.concurrency import ConcurrencyLimiter
+from backend.app.limits.model_pool import ModelPoolLimiter
 from backend.app.limits.nonce import NonceGuard
 from backend.app.limits.qps import SlidingWindowQps
 from backend.app.limits.redis import (
@@ -71,6 +72,40 @@ def test_distributed_control_settings_enforce_ttl_relationships() -> None:
         )  # type: ignore[arg-type]
 
 
+def test_model_pool_settings_are_bounded_and_consistent_per_pool() -> None:
+    settings = Settings(
+        **settings_values(
+            model_pool_policies={
+                "model-1": {"pool_id": "pool-a", "active_limit": 20},
+                "model-2": {"pool_id": "pool-a", "active_limit": 20},
+            }
+        )
+    )  # type: ignore[arg-type]
+
+    assert settings.model_pool_policies["model-1"].pool_id == "pool-a"
+    assert settings.model_pool_policies["model-1"].active_limit == 20
+    assert (
+        settings.contract_api_global_queue_limit,
+        settings.contract_api_caller_queue_limit,
+        settings.contract_api_queue_wait_seconds,
+        settings.contract_api_queue_poll_milliseconds,
+    ) == (200, 8, 30, 250)
+
+    with pytest.raises(ValidationError, match="same active limit"):
+        Settings(
+            **settings_values(
+                model_pool_policies={
+                    "model-1": {"pool_id": "pool-a", "active_limit": 20},
+                    "model-2": {"pool_id": "pool-a", "active_limit": 21},
+                }
+            )
+        )  # type: ignore[arg-type]
+    with pytest.raises(ValidationError):
+        Settings(**settings_values(contract_api_global_queue_limit=10_001))  # type: ignore[arg-type]
+    with pytest.raises(ValidationError):
+        Settings(**settings_values(contract_api_queue_poll_milliseconds=49))  # type: ignore[arg-type]
+
+
 def test_redis_identifiers_are_hash_only() -> None:
     identifier = redis_identifier("caller-sensitive-value")
     key = build_redis_key("nonce", "caller-sensitive-value", "nonce-sensitive-value")
@@ -92,7 +127,10 @@ def test_production_redis_client_has_bounded_timeouts_and_pool() -> None:
     asyncio.run(client.aclose())
 
 
-@pytest.mark.parametrize("control_name", ["nonce", "qps", "concurrency", "concurrency_observe"])
+@pytest.mark.parametrize(
+    "control_name",
+    ["nonce", "qps", "concurrency", "concurrency_observe", "model_pool"],
+)
 def test_redis_timeout_fails_closed_without_process_fallback(control_name: str) -> None:
     async def scenario() -> tuple[ControlPlaneUnavailable, int]:
         redis = FailingRedis()
@@ -108,6 +146,15 @@ def test_redis_timeout_fails_closed_without_process_fallback(control_name: str) 
             ),
             "concurrency_observe": lambda: ConcurrencyLimiter(redis).observe(
                 api_client_id="client-1", limit=1
+            ),
+            "model_pool": lambda: ModelPoolLimiter(redis).admit_or_enqueue(
+                pool_id="pool-1",
+                api_client_id="client-1",
+                operation_id="operation-1",
+                active_limit=1,
+                queue_limit=2,
+                caller_queue_limit=1,
+                queue_wait_seconds=5,
             ),
         }[control_name]
         with pytest.raises(ControlPlaneUnavailable) as captured:

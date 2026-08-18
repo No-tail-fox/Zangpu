@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from contextlib import suppress
 from dataclasses import dataclass, field
 from time import monotonic, monotonic_ns, time
 from typing import Literal, TypeVar
@@ -21,6 +22,7 @@ from backend.app.integrations.bifrost.models import BifrostUpstreamError, ChatCo
 from backend.app.integrations.openwebui.client import OpenWebUIClient
 from backend.app.integrations.openwebui.models import OpenWebUIUpstreamError
 from backend.app.limits.concurrency import ConcurrencyDecision, ConcurrencyLimiter
+from backend.app.limits.model_pool import ModelPoolDecision, ModelPoolLimiter, ModelPoolPolicy
 from backend.app.limits.nonce import NonceGuard
 from backend.app.limits.qps import QpsDecision, SlidingWindowQps
 from backend.app.limits.redis import ControlPlaneUnavailable
@@ -68,6 +70,7 @@ class _ChatAdmission:
     qps: QpsDecision
     concurrency: ConcurrencyDecision
     lease: _ConcurrencyLeaseGuard
+    model_pool_id: str
     headers: dict[str, str]
     settlement_id: str
     usage_operation_id: str
@@ -94,9 +97,26 @@ def concurrency_limit_headers(decision: ConcurrencyDecision) -> dict[str, str]:
     return headers
 
 
+def model_pool_limit_headers(decision: ModelPoolDecision) -> dict[str, str]:
+    headers = {
+        "X-Model-Pool-Limit": str(decision.active_limit),
+        "X-Model-Pool-Remaining": str(decision.active_remaining),
+        "X-Queue-Limit": str(decision.queue_limit),
+        "X-Queue-Remaining": str(decision.queue_remaining),
+        "X-Model-Pool-Reset": str((decision.expires_at_ms + 999) // 1_000),
+    }
+    if decision.status != "admitted":
+        headers["Retry-After"] = str(
+            max((decision.expires_at_ms - decision.observed_at_ms + 999) // 1_000, 1)
+        )
+    return headers
+
+
 @dataclass(slots=True)
 class _ConcurrencyLeaseGuard:
     limiter: ConcurrencyLimiter
+    model_pool_limiter: ModelPoolLimiter
+    model_pool_id: str
     api_client_id: str
     operation_id: str
     heartbeat_interval_seconds: float
@@ -119,7 +139,11 @@ class _ConcurrencyLeaseGuard:
             api_client_id=self.api_client_id,
             operation_id=self.operation_id,
         )
-        if not renewed:
+        model_renewed = await self.model_pool_limiter.heartbeat(
+            pool_id=self.model_pool_id,
+            operation_id=self.operation_id,
+        )
+        if not renewed or not model_renewed:
             raise ControlPlaneUnavailable
         self._next_heartbeat_at = self.monotonic_seconds() + self.heartbeat_interval_seconds
 
@@ -216,11 +240,18 @@ class ExternalChatService:
         nonce_guard: NonceGuard,
         qps_limiter: SlidingWindowQps,
         concurrency_limiter: ConcurrencyLimiter,
+        model_pool_limiter: ModelPoolLimiter,
+        model_pool_policies: Mapping[str, ModelPoolPolicy],
         bifrost: BifrostClient,
         openwebui: OpenWebUIClient,
         global_max_output_tokens: int,
         heartbeat_interval_seconds: float = 15.0,
         monotonic_seconds: Callable[[], float] = monotonic,
+        global_queue_limit: int = 200,
+        caller_queue_limit: int = 8,
+        queue_wait_seconds: int = 30,
+        queue_poll_milliseconds: int = 250,
+        queue_sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         if not 1 <= global_max_output_tokens <= 1_000_000:
             raise ValueError("global output Token limit is invalid")
@@ -231,16 +262,35 @@ class ExternalChatService:
             raise ValueError("heartbeat interval is invalid")
         if not callable(monotonic_seconds):
             raise ValueError("monotonic clock is invalid")
+        if not 0 <= global_queue_limit <= 10_000:
+            raise ValueError("global queue limit is invalid")
+        if not 0 <= caller_queue_limit <= 1_000:
+            raise ValueError("caller queue limit is invalid")
+        if global_queue_limit > 0 and caller_queue_limit == 0:
+            raise ValueError("caller queue limit must be positive when queueing is enabled")
+        if not 1 <= queue_wait_seconds <= 300:
+            raise ValueError("queue wait is invalid")
+        if not 50 <= queue_poll_milliseconds <= 2_000:
+            raise ValueError("queue poll interval is invalid")
+        if not callable(queue_sleep):
+            raise ValueError("queue sleep is invalid")
         self._sessions = sessions
         self._keyring = keyring
         self._nonce_guard = nonce_guard
         self._qps_limiter = qps_limiter
         self._concurrency_limiter = concurrency_limiter
+        self._model_pool_limiter = model_pool_limiter
+        self._model_pool_policies = dict(model_pool_policies)
         self._bifrost = bifrost
         self._openwebui = openwebui
         self._global_max_output_tokens = global_max_output_tokens
         self._heartbeat_interval_seconds = heartbeat_interval_seconds
         self._monotonic_seconds = monotonic_seconds
+        self._global_queue_limit = global_queue_limit
+        self._caller_queue_limit = caller_queue_limit
+        self._queue_wait_seconds = queue_wait_seconds
+        self._queue_poll_seconds = queue_poll_milliseconds / 1_000
+        self._queue_sleep = queue_sleep
 
     def _load_policy(self, caller: AuthenticatedCaller, now: int) -> CallerPolicy:
         with self._sessions() as session:
@@ -250,6 +300,101 @@ class ExternalChatService:
                 keyring=self._keyring,
                 now=now,
             )
+
+    async def _acquire_model_pool(
+        self,
+        *,
+        model_id: str,
+        api_client_id: str,
+        operation_id: str,
+        headers: dict[str, str],
+    ) -> tuple[ModelPoolPolicy, ModelPoolDecision]:
+        policy = self._model_pool_policies.get(model_id)
+        if policy is None:
+            raise ExternalApiError("MODEL_UNAVAILABLE", headers=headers)
+        decision = await self._model_pool_limiter.admit_or_enqueue(
+            pool_id=policy.pool_id,
+            api_client_id=api_client_id,
+            operation_id=operation_id,
+            active_limit=policy.active_limit,
+            queue_limit=self._global_queue_limit,
+            caller_queue_limit=self._caller_queue_limit,
+            queue_wait_seconds=self._queue_wait_seconds,
+        )
+        headers.update(model_pool_limit_headers(decision))
+        if decision.status == "admitted":
+            return policy, decision
+        if decision.status != "queued":
+            raise ExternalApiError("MODEL_CAPACITY_LIMITED", headers=headers)
+
+        queue_deadline = self._monotonic_seconds() + max(
+            (decision.expires_at_ms - decision.observed_at_ms) / 1_000,
+            0.0,
+        )
+        try:
+            while True:
+                remaining = queue_deadline - self._monotonic_seconds()
+                if remaining <= 0:
+                    headers["Retry-After"] = "1"
+                    raise ExternalApiError("MODEL_CAPACITY_LIMITED", headers=headers)
+                await self._queue_sleep(min(self._queue_poll_seconds, remaining))
+                if self._monotonic_seconds() >= queue_deadline:
+                    headers["Retry-After"] = "1"
+                    raise ExternalApiError("MODEL_CAPACITY_LIMITED", headers=headers)
+                decision = await self._model_pool_limiter.admit_or_enqueue(
+                    pool_id=policy.pool_id,
+                    api_client_id=api_client_id,
+                    operation_id=operation_id,
+                    active_limit=policy.active_limit,
+                    queue_limit=self._global_queue_limit,
+                    caller_queue_limit=self._caller_queue_limit,
+                    queue_wait_seconds=self._queue_wait_seconds,
+                )
+                headers.update(model_pool_limit_headers(decision))
+                if decision.status == "admitted":
+                    return policy, decision
+                if decision.status != "queued":
+                    raise ExternalApiError("MODEL_CAPACITY_LIMITED", headers=headers)
+        except (asyncio.CancelledError, GeneratorExit):
+            with suppress(ControlPlaneUnavailable):
+                await self._model_pool_limiter.cancel(
+                    pool_id=policy.pool_id,
+                    api_client_id=api_client_id,
+                    operation_id=operation_id,
+                )
+            raise
+        except BaseException:
+            if decision.status == "queued":
+                await self._model_pool_limiter.cancel(
+                    pool_id=policy.pool_id,
+                    api_client_id=api_client_id,
+                    operation_id=operation_id,
+                )
+            raise
+
+    async def _release_active_leases(
+        self,
+        *,
+        api_client_id: str,
+        pool_id: str,
+        operation_id: str,
+    ) -> bool:
+        released_cleanly = True
+        try:
+            await self._concurrency_limiter.release(
+                api_client_id=api_client_id,
+                operation_id=operation_id,
+            )
+        except ControlPlaneUnavailable:
+            released_cleanly = False
+        try:
+            await self._model_pool_limiter.release(
+                pool_id=pool_id,
+                operation_id=operation_id,
+            )
+        except ControlPlaneUnavailable:
+            released_cleanly = False
+        return released_cleanly
 
     def _reserve_quota(
         self,
@@ -400,16 +545,35 @@ class ExternalChatService:
         if not qps.allowed:
             raise ExternalApiError("QPS_LIMITED", headers=headers)
 
-        concurrency = await self._concurrency_limiter.acquire(
+        model_pool_policy, _model_pool = await self._acquire_model_pool(
+            model_id=request.model,
             api_client_id=caller.api_client_id,
             operation_id=operation_id,
-            limit=policy.concurrency_limit,
+            headers=headers,
         )
+        try:
+            concurrency = await self._concurrency_limiter.acquire(
+                api_client_id=caller.api_client_id,
+                operation_id=operation_id,
+                limit=policy.concurrency_limit,
+            )
+        except BaseException:
+            await self._model_pool_limiter.release(
+                pool_id=model_pool_policy.pool_id,
+                operation_id=operation_id,
+            )
+            raise
         headers.update(concurrency_limit_headers(concurrency))
         if not concurrency.allowed:
+            await self._model_pool_limiter.release(
+                pool_id=model_pool_policy.pool_id,
+                operation_id=operation_id,
+            )
             raise ExternalApiError("CONCURRENCY_LIMITED", headers=headers)
         lease = _ConcurrencyLeaseGuard(
             limiter=self._concurrency_limiter,
+            model_pool_limiter=self._model_pool_limiter,
+            model_pool_id=model_pool_policy.pool_id,
             api_client_id=caller.api_client_id,
             operation_id=operation_id,
             heartbeat_interval_seconds=self._heartbeat_interval_seconds,
@@ -616,14 +780,13 @@ class ExternalChatService:
             terminal_committed = True
             return ExternalChatResult(response=response, rate_limit_headers=headers)
         finally:
-            try:
-                await self._concurrency_limiter.release(
-                    api_client_id=caller.api_client_id,
-                    operation_id=operation_id,
-                )
-            except ControlPlaneUnavailable:
-                if not terminal_committed:
-                    raise
+            released_cleanly = await self._release_active_leases(
+                api_client_id=caller.api_client_id,
+                pool_id=model_pool_policy.pool_id,
+                operation_id=operation_id,
+            )
+            if not released_cleanly and not terminal_committed:
+                raise ControlPlaneUnavailable from None
 
     async def prepare_stream(
         self,
@@ -665,16 +828,35 @@ class ExternalChatService:
         if not qps.allowed:
             raise ExternalApiError("QPS_LIMITED", headers=headers)
 
-        concurrency = await self._concurrency_limiter.acquire(
+        model_pool_policy, _model_pool = await self._acquire_model_pool(
+            model_id=request.model,
             api_client_id=caller.api_client_id,
             operation_id=operation_id,
-            limit=policy.concurrency_limit,
+            headers=headers,
         )
+        try:
+            concurrency = await self._concurrency_limiter.acquire(
+                api_client_id=caller.api_client_id,
+                operation_id=operation_id,
+                limit=policy.concurrency_limit,
+            )
+        except BaseException:
+            await self._model_pool_limiter.release(
+                pool_id=model_pool_policy.pool_id,
+                operation_id=operation_id,
+            )
+            raise
         headers.update(concurrency_limit_headers(concurrency))
         if not concurrency.allowed:
+            await self._model_pool_limiter.release(
+                pool_id=model_pool_policy.pool_id,
+                operation_id=operation_id,
+            )
             raise ExternalApiError("CONCURRENCY_LIMITED", headers=headers)
         lease = _ConcurrencyLeaseGuard(
             limiter=self._concurrency_limiter,
+            model_pool_limiter=self._model_pool_limiter,
+            model_pool_id=model_pool_policy.pool_id,
             api_client_id=caller.api_client_id,
             operation_id=operation_id,
             heartbeat_interval_seconds=self._heartbeat_interval_seconds,
@@ -774,6 +956,7 @@ class ExternalChatService:
                 qps=qps,
                 concurrency=concurrency,
                 lease=lease,
+                model_pool_id=model_pool_policy.pool_id,
                 headers=headers,
                 settlement_id=settlement_id,
                 usage_operation_id=expected_usage_operation_id,
@@ -783,14 +966,13 @@ class ExternalChatService:
                 rate_limit_headers=headers,
             )
         except BaseException:
-            try:
-                await self._concurrency_limiter.release(
-                    api_client_id=caller.api_client_id,
-                    operation_id=operation_id,
-                )
-            except ControlPlaneUnavailable:
-                if not terminal_committed:
-                    raise
+            released_cleanly = await self._release_active_leases(
+                api_client_id=caller.api_client_id,
+                pool_id=model_pool_policy.pool_id,
+                operation_id=operation_id,
+            )
+            if not released_cleanly and not terminal_committed:
+                raise ControlPlaneUnavailable from None
             raise
 
     async def _settle_stream(self, admission: _ChatAdmission, usage: ChatUsage) -> int:
@@ -1037,11 +1219,10 @@ class ExternalChatService:
             try:
                 await _close_stream_iterator(upstream)
             finally:
-                try:
-                    await self._concurrency_limiter.release(
-                        api_client_id=admission.caller.api_client_id,
-                        operation_id=admission.operation_id,
-                    )
-                except ControlPlaneUnavailable:
-                    if not terminal_committed:
-                        return
+                released_cleanly = await self._release_active_leases(
+                    api_client_id=admission.caller.api_client_id,
+                    pool_id=admission.model_pool_id,
+                    operation_id=admission.operation_id,
+                )
+                if not released_cleanly and not terminal_committed:
+                    raise ControlPlaneUnavailable from None

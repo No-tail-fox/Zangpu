@@ -34,6 +34,10 @@ def configure_required_environment(monkeypatch: pytest.MonkeyPatch) -> dict[str,
             {"v1": base64.b64encode(bytes(32)).decode("ascii")}, separators=(",", ":")
         ),
         "ZANGPU_API_CREDENTIAL_ACTIVE_KEY_ID": "v1",
+        "ZANGPU_MODEL_POOL_POLICIES": json.dumps(
+            {"model-1": {"pool_id": "pool-1", "active_limit": 20}},
+            separators=(",", ":"),
+        ),
     }
     for key, value in values.items():
         monkeypatch.setenv(key, value)
@@ -74,6 +78,16 @@ def test_production_requires_separate_admin_login_token(monkeypatch: pytest.Monk
 
     monkeypatch.setenv("ZANGPU_ADMIN_LOGIN_TOKEN", "admin-session-secret-that-is-at-least-32-bytes")
     with pytest.raises(ValidationError, match="must be different"):
+        settings_module.Settings(_env_file=None)
+
+
+def test_production_requires_explicit_model_pool_capacity(monkeypatch: pytest.MonkeyPatch) -> None:
+    configure_required_environment(monkeypatch)
+    monkeypatch.setenv("ZANGPU_ENVIRONMENT", "production")
+    monkeypatch.delenv("ZANGPU_MODEL_POOL_POLICIES")
+    settings_module = import_module("backend.app.settings")
+
+    with pytest.raises(ValidationError, match="model-pool policy"):
         settings_module.Settings(_env_file=None)
 
 

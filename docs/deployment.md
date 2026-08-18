@@ -20,6 +20,27 @@ Compose 只把 caller 端口 9000 和管理员端口 9001 绑定到 `127.0.0.1`�
 
 不要把真实值写入仓库、Compose 文件、浏览器配置、日志或 smoke 结果。
 
+同时必须提供模型池和排队策略：
+
+- `MODEL_POOL_POLICIES` 是按模型 ID 索引的 JSON 对象。每个值必须包含
+  `pool_id` 和 `active_limit`，例如：
+
+  ```json
+  {"qwen2.5-7b-instruct":{"pool_id":"qwen2.5-7b","active_limit":8}}
+  ```
+
+  `active_limit` 是经过目标 GPU、模型、量化、上下文长度和 Token 分布实测后的
+  同时生成上限；它保护模型服务，不等于 200 个在线用户，也不能在没有 GPU 证据时直接设置为 200。
+  同一模型池中的模型必须使用相同的 `active_limit`。
+- `CONTRACT_API_GLOBAL_QUEUE_LIMIT` 默认 `200`，是所有模型池共享的等待 ticket 上限。
+- `CONTRACT_API_CALLER_QUEUE_LIMIT` 默认 `8`，限制单个调用方的等待 ticket 数量。
+- `CONTRACT_API_QUEUE_WAIT_SECONDS` 默认 `30`，ticket 的绝对等待期限；超时不会继续占用队列。
+- `CONTRACT_API_QUEUE_POLL_MILLISECONDS` 默认 `250`，后台轮询队列头的间隔。
+
+模型池准入在调用方并发、SQL 配额、Open WebUI 积分和 Bifrost 推理之前执行。队列满、调用方队列满、等待超时或 Valkey 不可用都会快速失败，返回稳定的容量错误和 `Retry-After`/容量响应头，不扣费、不预留配额，也不调用上游模型。
+
+这些设置只冻结硬件无关的准入语义。当前工作站没有 Docker，且尚未提供目标 GPU/模型参数，因此不能据此声称真实 PostgreSQL、Valkey、Bifrost、Open WebUI 联调或 200 路活跃生成已经通过。真实验收仍需按 `20 -> 50 -> 100 -> 200` 分阶段运行连接、排队和 GPU 推理压测。
+
 ## 结构检查与迁移
 
 ```powershell

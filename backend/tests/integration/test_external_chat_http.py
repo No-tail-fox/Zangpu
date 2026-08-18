@@ -135,6 +135,7 @@ def settings(serialized_keys: str) -> Settings:
         admin_session_secret="admin-session-secret-that-is-at-least-32-bytes",  # noqa: S106
         api_credential_keys=serialized_keys,
         api_credential_active_key_id="v1",
+        model_pool_policies={"model-1": {"pool_id": "pool-1", "active_limit": 2}},
     )
 
 

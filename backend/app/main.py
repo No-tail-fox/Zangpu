@@ -13,6 +13,7 @@ from backend.app.integrations.bifrost.client import BifrostClient
 from backend.app.integrations.bifrost.preflight import BifrostPreflightReport, verify_bifrost_preflight
 from backend.app.integrations.openwebui.client import OpenWebUIClient
 from backend.app.limits.concurrency import ConcurrencyLimiter
+from backend.app.limits.model_pool import ModelPoolLimiter
 from backend.app.limits.nonce import NonceGuard
 from backend.app.limits.qps import SlidingWindowQps
 from backend.app.limits.redis import create_redis_client
@@ -117,17 +118,28 @@ def create_app(
                 redis_client,
                 lease_seconds=active_settings.contract_api_concurrency_lease_seconds,
             )
+            model_pool_limiter = ModelPoolLimiter(
+                redis_client,
+                lease_seconds=active_settings.contract_api_concurrency_lease_seconds,
+            )
             app.state.concurrency_limiter = concurrency_limiter
+            app.state.model_pool_limiter = model_pool_limiter
             app.state.external_chat_service = ExternalChatService(
                 sessions=database_runtime.sessions,
                 keyring=app.state.credential_keyring,
                 nonce_guard=nonce_guard,
                 qps_limiter=qps_limiter,
                 concurrency_limiter=concurrency_limiter,
+                model_pool_limiter=model_pool_limiter,
+                model_pool_policies=active_settings.model_pool_policies,
                 bifrost=bifrost_client,
                 openwebui=openwebui_client,
                 global_max_output_tokens=active_settings.contract_api_max_output_tokens,
                 heartbeat_interval_seconds=active_settings.contract_api_concurrency_heartbeat_seconds,
+                global_queue_limit=active_settings.contract_api_global_queue_limit,
+                caller_queue_limit=active_settings.contract_api_caller_queue_limit,
+                queue_wait_seconds=active_settings.contract_api_queue_wait_seconds,
+                queue_poll_milliseconds=active_settings.contract_api_queue_poll_milliseconds,
             )
             app.state.external_metadata_service = ExternalMetadataService(
                 sessions=database_runtime.sessions,

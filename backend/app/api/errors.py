@@ -30,6 +30,7 @@ ERROR_SPECS = {
     "CLIENT_DISCONNECTED": ExternalErrorSpec(499, "Client disconnected.", False),
     "QPS_LIMITED": ExternalErrorSpec(429, "Request rate limit exceeded.", True),
     "CONCURRENCY_LIMITED": ExternalErrorSpec(429, "Concurrency limit exceeded.", True),
+    "MODEL_CAPACITY_LIMITED": ExternalErrorSpec(429, "Model capacity is temporarily full.", True),
     "DAILY_REQUEST_QUOTA_EXCEEDED": ExternalErrorSpec(429, "Daily request quota exceeded.", False),
     "DAILY_TOKEN_QUOTA_EXCEEDED": ExternalErrorSpec(429, "Daily Token quota exceeded.", False),
     "TOTAL_REQUEST_QUOTA_EXCEEDED": ExternalErrorSpec(429, "Lifetime request quota exceeded.", False),

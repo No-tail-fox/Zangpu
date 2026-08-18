@@ -2,7 +2,7 @@ import asyncio
 import base64
 import json
 import time
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from types import SimpleNamespace
 from uuid import UUID
 
@@ -26,6 +26,7 @@ from backend.app.integrations.bifrost.models import (
 )
 from backend.app.integrations.openwebui.models import OpenWebUIUpstreamError
 from backend.app.limits.concurrency import ConcurrencyDecision
+from backend.app.limits.model_pool import ModelPoolDecision, ModelPoolPolicy
 from backend.app.limits.qps import QpsDecision
 from backend.app.limits.redis import ControlPlaneUnavailable
 from backend.app.models import Base
@@ -212,6 +213,61 @@ class FakeConcurrencyLimiter:
         return self.heartbeat_renewed
 
 
+def model_pool_decision(status: str) -> ModelPoolDecision:
+    queued = status == "queued"
+    full = status in {"queue_full", "caller_queue_full"}
+    return ModelPoolDecision(
+        status=status,  # type: ignore[arg-type]
+        active_count=1,
+        active_limit=1,
+        active_remaining=0,
+        queue_count=1 if queued else (2 if full else 0),
+        queue_limit=2,
+        queue_remaining=1 if queued else (0 if full else 2),
+        pool_queue_count=1 if queued else (2 if full else 0),
+        queue_position=1 if queued else 0,
+        expires_at_ms=1_785_420_160_000,
+        observed_at_ms=1_785_420_100_000,
+    )
+
+
+class FakeModelPoolLimiter:
+    def __init__(
+        self,
+        calls: list[str],
+        *,
+        decisions: list[ModelPoolDecision] | None = None,
+        track: bool = False,
+        heartbeat_renewed: bool = True,
+    ) -> None:
+        self.calls = calls
+        self.decisions = list(decisions or [model_pool_decision("admitted")])
+        self.track = track
+        self.heartbeat_renewed = heartbeat_renewed
+
+    async def admit_or_enqueue(self, **_kwargs: object) -> ModelPoolDecision:
+        if self.track:
+            self.calls.append("model_pool_admit")
+        if len(self.decisions) > 1:
+            return self.decisions.pop(0)
+        return self.decisions[0]
+
+    async def heartbeat(self, **_kwargs: object) -> bool:
+        if self.track:
+            self.calls.append("model_pool_heartbeat")
+        return self.heartbeat_renewed
+
+    async def release(self, **_kwargs: object) -> bool:
+        if self.track:
+            self.calls.append("model_pool_release")
+        return True
+
+    async def cancel(self, **_kwargs: object) -> bool:
+        if self.track:
+            self.calls.append("model_pool_cancel")
+        return True
+
+
 class FakeBifrost:
     def __init__(self, calls: list[str], *, failure: bool = False) -> None:
         self.calls = calls
@@ -392,8 +448,10 @@ def build_service(
     bifrost: FakeBifrost | FakeStreamingBifrost | None = None,
     openwebui: FakeOpenWebUI | None = None,
     concurrency_limiter: FakeConcurrencyLimiter | None = None,
+    model_pool_limiter: FakeModelPoolLimiter | None = None,
     heartbeat_interval_seconds: float = 15.0,
     monotonic_seconds: Callable[[], float] = time.monotonic,
+    queue_sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
 ) -> tuple[ExternalChatService, FakeBifrost]:
     remote = bifrost or FakeBifrost(calls)
     return (
@@ -403,11 +461,18 @@ def build_service(
             nonce_guard=FakeNonceGuard(calls),
             qps_limiter=FakeQpsLimiter(calls),
             concurrency_limiter=concurrency_limiter or FakeConcurrencyLimiter(calls),
+            model_pool_limiter=model_pool_limiter or FakeModelPoolLimiter(calls),  # type: ignore[arg-type]
+            model_pool_policies={"model-1": ModelPoolPolicy(pool_id="pool-1", active_limit=1)},
             bifrost=remote,  # type: ignore[arg-type]
             openwebui=openwebui or FakeOpenWebUI(calls),  # type: ignore[arg-type]
             global_max_output_tokens=256,
             heartbeat_interval_seconds=heartbeat_interval_seconds,
             monotonic_seconds=monotonic_seconds,
+            global_queue_limit=2,
+            caller_queue_limit=1,
+            queue_wait_seconds=30,
+            queue_poll_milliseconds=50,
+            queue_sleep=queue_sleep,
         ),
         remote,
     )
@@ -479,6 +544,11 @@ def test_concurrency_rejection_returns_stable_headers_before_quota_or_inference(
         "X-RateLimit-Limit": "10",
         "X-RateLimit-Remaining": "9",
         "X-RateLimit-Reset": "1785420101",
+        "X-Model-Pool-Limit": "1",
+        "X-Model-Pool-Remaining": "0",
+        "X-Queue-Limit": "2",
+        "X-Queue-Remaining": "2",
+        "X-Model-Pool-Reset": "1785420160",
         "X-Concurrency-Limit": "2",
         "X-Concurrency-Remaining": "0",
         "X-Concurrency-Reset": "1785420160",
@@ -489,6 +559,102 @@ def test_concurrency_rejection_returns_stable_headers_before_quota_or_inference(
     with Session(engine) as session:
         assert session.scalar(select(ApiCallOperation)) is None
         assert session.scalar(select(ApiCallEvent)) is None
+
+
+def test_model_pool_waits_before_caller_quota_credit_or_inference(engine: Engine) -> None:
+    ring = seed_caller(engine)
+    calls: list[str] = []
+    model_pool = FakeModelPoolLimiter(
+        calls,
+        decisions=[model_pool_decision("queued"), model_pool_decision("admitted")],
+        track=True,
+    )
+
+    async def queue_sleep(_seconds: float) -> None:
+        calls.append("queue_wait")
+        assert "concurrency_acquire" not in calls
+        assert "credit_reserve" not in calls
+        assert "bifrost" not in calls
+
+    service, _remote = build_service(
+        engine,
+        ring,
+        calls=calls,
+        model_pool_limiter=model_pool,
+        queue_sleep=queue_sleep,
+    )
+
+    result = execute(service)
+
+    assert result.response.usage.total_tokens == 8
+    assert calls[:6] == [
+        "nonce",
+        "qps",
+        "model_pool_admit",
+        "queue_wait",
+        "model_pool_admit",
+        "concurrency_acquire",
+    ]
+    assert calls[-2:] == ["concurrency_release", "model_pool_release"]
+
+
+def test_model_pool_full_returns_429_evidence_without_side_effects(engine: Engine) -> None:
+    ring = seed_caller(engine)
+    calls: list[str] = []
+    model_pool = FakeModelPoolLimiter(
+        calls,
+        decisions=[model_pool_decision("queue_full")],
+        track=True,
+    )
+    service, remote = build_service(engine, ring, calls=calls, model_pool_limiter=model_pool)
+
+    with pytest.raises(ExternalApiError) as captured:
+        execute(service)
+
+    assert captured.value.code == "MODEL_CAPACITY_LIMITED"
+    assert captured.value.headers == {
+        "X-RateLimit-Limit": "10",
+        "X-RateLimit-Remaining": "9",
+        "X-RateLimit-Reset": "1785420101",
+        "X-Model-Pool-Limit": "1",
+        "X-Model-Pool-Remaining": "0",
+        "X-Queue-Limit": "2",
+        "X-Queue-Remaining": "0",
+        "X-Model-Pool-Reset": "1785420160",
+        "Retry-After": "60",
+    }
+    assert calls == ["nonce", "qps", "model_pool_admit"]
+    assert remote.forward_count == 0
+    with Session(engine) as session:
+        assert session.scalar(select(ApiCallOperation)) is None
+        assert session.scalar(select(ApiCallEvent)) is None
+
+
+def test_caller_rejection_releases_already_acquired_model_slot(engine: Engine) -> None:
+    ring = seed_caller(engine)
+    calls: list[str] = []
+    model_pool = FakeModelPoolLimiter(calls, track=True)
+    concurrency = FakeConcurrencyLimiter(calls, allowed=False)
+    service, remote = build_service(
+        engine,
+        ring,
+        calls=calls,
+        concurrency_limiter=concurrency,
+        model_pool_limiter=model_pool,
+    )
+
+    with pytest.raises(ExternalApiError) as captured:
+        execute(service)
+
+    assert captured.value.code == "CONCURRENCY_LIMITED"
+    assert calls == [
+        "nonce",
+        "qps",
+        "model_pool_admit",
+        "concurrency_acquire",
+        "model_pool_release",
+    ]
+    assert remote.forward_count == 0
 
 
 def test_busy_non_stream_renews_lease_until_provider_completes(engine: Engine) -> None:
@@ -503,11 +669,13 @@ def test_busy_non_stream_renews_lease_until_provider_completes(engine: Engine) -
             return await super().forward_chat_completion(payload, virtual_key=virtual_key)
 
     remote = SlowBifrost(calls)
+    model_pool = FakeModelPoolLimiter(calls, track=True)
     service, _remote = build_service(
         engine,
         ring,
         calls=calls,
         bifrost=remote,
+        model_pool_limiter=model_pool,
         heartbeat_interval_seconds=0.005,
     )
 
@@ -515,8 +683,9 @@ def test_busy_non_stream_renews_lease_until_provider_completes(engine: Engine) -
 
     assert result.response.usage.total_tokens == 8
     assert calls.count("concurrency_heartbeat") >= 1
+    assert calls.count("model_pool_heartbeat") >= 1
     assert calls.index("concurrency_heartbeat") < calls.index("credit_settle")
-    assert calls[-1] == "concurrency_release"
+    assert calls[-2:] == ["concurrency_release", "model_pool_release"]
 
 
 def test_non_stream_lost_lease_cancels_provider_and_releases(engine: Engine) -> None:
@@ -545,6 +714,7 @@ def test_non_stream_lost_lease_cancels_provider_and_releases(engine: Engine) -> 
             return "bifrost" not in self.calls
 
     concurrency = ProviderLeaseLimiter(calls)
+    model_pool = FakeModelPoolLimiter(calls, track=True)
     remote = BlockingBifrost(calls)
     service, _remote = build_service(
         engine,
@@ -552,6 +722,7 @@ def test_non_stream_lost_lease_cancels_provider_and_releases(engine: Engine) -> 
         calls=calls,
         bifrost=remote,
         concurrency_limiter=concurrency,
+        model_pool_limiter=model_pool,
         heartbeat_interval_seconds=0.005,
     )
 
@@ -573,6 +744,7 @@ def test_non_stream_lost_lease_cancels_provider_and_releases(engine: Engine) -> 
     assert calls.count("concurrency_heartbeat") >= 1
     assert calls.index("bifrost") < len(calls) - 1 - calls[::-1].index("concurrency_heartbeat")
     assert calls.count("concurrency_release") == 1
+    assert calls.count("model_pool_release") == 1
     assert "credit_settle" not in calls and "credit_cancel" not in calls
 
 
@@ -676,11 +848,13 @@ def test_stream_success_heartbeats_settles_before_done_and_records_stream_event(
     ring = seed_caller(engine)
     calls: list[str] = []
     remote = FakeStreamingBifrost(calls)
+    model_pool = FakeModelPoolLimiter(calls, track=True)
     service, _remote = build_service(
         engine,
         ring,
         calls=calls,
         bifrost=remote,
+        model_pool_limiter=model_pool,
         heartbeat_interval_seconds=0.005,
     )
 
@@ -691,6 +865,8 @@ def test_stream_success_heartbeats_settles_before_done_and_records_stream_event(
     assert body.endswith(b"data: [DONE]\n\n")
     assert calls.index("credit_settle") < calls.index("concurrency_release")
     assert calls.count("concurrency_heartbeat") >= 1
+    assert calls.count("model_pool_heartbeat") >= 1
+    assert calls[-2:] == ["concurrency_release", "model_pool_release"]
     with Session(engine) as session:
         operation = session.scalar(select(ApiCallOperation))
         event = session.scalar(select(ApiCallEvent))
@@ -779,7 +955,14 @@ def test_stream_disconnect_cancels_without_usage_and_releases_exactly_once(engin
     ring = seed_caller(engine)
     calls: list[str] = []
     remote = FakeStreamingBifrost(calls)
-    service, _remote = build_service(engine, ring, calls=calls, bifrost=remote)
+    model_pool = FakeModelPoolLimiter(calls, track=True)
+    service, _remote = build_service(
+        engine,
+        ring,
+        calls=calls,
+        bifrost=remote,
+        model_pool_limiter=model_pool,
+    )
 
     async def scenario() -> bytes:
         result = await service.prepare_stream(
@@ -797,6 +980,7 @@ def test_stream_disconnect_cancels_without_usage_and_releases_exactly_once(engin
 
     assert b'"content":"answer"' in first
     assert calls.count("credit_cancel") == calls.count("concurrency_release") == 1
+    assert calls.count("model_pool_release") == 1
     assert "credit_settle" not in calls
     with Session(engine) as session:
         event = session.scalar(select(ApiCallEvent))
