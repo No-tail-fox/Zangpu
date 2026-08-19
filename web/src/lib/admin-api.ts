@@ -76,6 +76,34 @@ export interface CallerConcurrencyState {
   last_lease_expires_at_ms: number;
 }
 
+export type ModelCapacityState = "idle" | "available" | "saturated" | "queued";
+
+export interface ModelPoolCapacity {
+  pool_id: string;
+  model_ids: string[];
+  state: ModelCapacityState;
+  active_count: number;
+  active_limit: number;
+  active_remaining: number;
+  pool_queue_count: number;
+  next_active_expires_at_ms: number;
+  next_queue_expires_at_ms: number;
+  observed_at_ms: number;
+}
+
+export interface ModelCapacitySnapshot {
+  state: ModelCapacityState;
+  pool_count: number;
+  active_count: number;
+  active_limit: number;
+  active_remaining: number;
+  global_queue_count: number;
+  global_queue_limit: number;
+  global_queue_remaining: number;
+  observed_at_ms: number;
+  pools: ModelPoolCapacity[];
+}
+
 export interface AdminCallerCreateInput {
   name: string;
   description: string | null;
@@ -201,6 +229,10 @@ export class AdminApiClient {
 
   getCallerConcurrency(clientId: string): Promise<CallerConcurrencyState> {
     return this.request(`/callers/${encodeURIComponent(clientId)}/concurrency`, { method: "GET" });
+  }
+
+  getModelCapacity(): Promise<ModelCapacitySnapshot> {
+    return this.request("/capacity/model-pools", { method: "GET" });
   }
 
   createCaller(payload: AdminCallerCreateInput, idempotencyKey: string): Promise<CallerCreateResult> {

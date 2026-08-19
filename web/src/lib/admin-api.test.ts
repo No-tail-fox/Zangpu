@@ -10,6 +10,7 @@ import {
   type CallerDetail,
   type CallerSummary,
   type CredentialSummary,
+  type ModelCapacitySnapshot,
 } from "./admin-api";
 
 const session = {
@@ -78,6 +79,32 @@ const concurrency: CallerConcurrencyState = {
   observed_at_ms: 1_800_000_200_000,
   next_lease_expires_at_ms: 1_800_000_230_000,
   last_lease_expires_at_ms: 1_800_000_250_000,
+};
+
+const modelCapacity: ModelCapacitySnapshot = {
+  state: "queued",
+  pool_count: 1,
+  active_count: 1,
+  active_limit: 2,
+  active_remaining: 1,
+  global_queue_count: 3,
+  global_queue_limit: 200,
+  global_queue_remaining: 197,
+  observed_at_ms: 1_800_000_200_000,
+  pools: [
+    {
+      pool_id: "zangpu-chat",
+      model_ids: ["zangpu-chat"],
+      state: "queued",
+      active_count: 1,
+      active_limit: 2,
+      active_remaining: 1,
+      pool_queue_count: 3,
+      next_active_expires_at_ms: 1_800_000_230_000,
+      next_queue_expires_at_ms: 1_800_000_225_000,
+      observed_at_ms: 1_800_000_200_000,
+    },
+  ],
 };
 
 const createInput: AdminCallerCreateInput = {
@@ -174,6 +201,20 @@ describe("administrator API client", () => {
     const [url, init] = fetcher.mock.calls[0];
     const headers = new Headers(init?.headers);
     expect(url).toBe("/api/v1/admin/callers/caller%2F1/concurrency");
+    expect(init?.method).toBe("GET");
+    expect(headers.has("X-Zangpu-CSRF")).toBe(false);
+    expect(headers.has("Idempotency-Key")).toBe(false);
+  });
+
+  it("reads model-pool capacity without CSRF or mutation headers", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(jsonResponse(modelCapacity));
+    const api = new AdminApiClient(fetcher, session);
+
+    await expect(api.getModelCapacity()).resolves.toEqual(modelCapacity);
+
+    const [url, init] = fetcher.mock.calls[0];
+    const headers = new Headers(init?.headers);
+    expect(url).toBe("/api/v1/admin/capacity/model-pools");
     expect(init?.method).toBe("GET");
     expect(headers.has("X-Zangpu-CSRF")).toBe(false);
     expect(headers.has("Idempotency-Key")).toBe(false);

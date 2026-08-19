@@ -23,7 +23,7 @@
 | 用户积分账户、流水、问答扣减/结算/退款 | 待合并 | Open WebUI `b66102df9`；控制面客户端 `7735508` | 独立测试和本地 mock 通过；当前商业基线需确认合并关系 | 合并/发布两仓提交，做真实 Open WebUI + PostgreSQL 回归 |
 | 外部 API 调用方、Key/Secret、启停、轮换、撤销 | 已验证（API + 本地 Web） | caller create/list/detail/update、一次性 Secret、rotation、revoke、disable、审计、Bifrost outbox 和中文管理流程 | 完整 mock-backed Web 生命周期与真实后端合同分别通过；尚无真实 Bifrost worker 部署证据 | 部署环境运行 outbox，验证 pending/active/error/disabled 远端状态闭环 |
 | 签名、时间戳、nonce、防重放 | 已验证 | `843dcf9`、`2dc7bee` 及后续全量回归 | 固定向量、异常边界、nonce/QPS fakeredis、signed HTTP 通过 | 保持协议冻结；管理 API 使用独立会话，不复用 caller HMAC |
-| QPS、并发、每日/总请求和 Token 配额 | 已验证（API + 本地 Web） | Redis 原子租约、非流式/流式绝对心跳、精确 owner 释放、管理员实时占用和版本化 quota update | 32 抢 3 无超发；失去租约会取消在途请求；官方 k6 限制 2/尝试 5 得到 2 个 200、3 个 429；浏览器覆盖可用/已满/不可用 | 在真实 PostgreSQL/Valkey/Open WebUI/Bifrost 环境复跑并形成容量结论 |
+| QPS、并发、每日/总请求和 Token 配额 | 已验证（API + 本地 Web） | Redis 原子租约、模型池 FIFO/有界队列、非流式/流式绝对心跳、精确 owner 释放、管理员调用方与模型容量观察、版本化 quota update | 32 抢 3 无超发；失去租约会取消在途请求；官方 k6 限制 2/尝试 5 得到 2 个 200、3 个 429；浏览器覆盖调用方/模型容量可用、排队和 Valkey 不可用 | 在真实 PostgreSQL/Valkey/Open WebUI/Bifrost 环境复跑并形成容量结论 |
 | 调用方模型/端点权限隔离 | 已验证（API + 本地 Web） | `ApiClient.allowed_models/allowed_endpoints`、metadata/chat policy、版本化 policy update 和权限复选界面 | caller isolation、signed `/models`/`/usage`、管理更新及浏览器操作通过；绑定提供方/初始模型仍只读 | 部署环境验证 Bifrost 单绑定同步及真实模型可见性 |
 | JSON/SSE REST API、统一错误、版本化 | 已验证 | `c910df1`、`dca1b13`、`2dc7bee` | backend `155 passed` 基线、signed HTTP 和 SSE 合同通过 | 生成/补齐面向客户的 OpenAPI/API 文档和部署 smoke |
 | Python/JavaScript SDK、PowerShell/cURL、示例 | 已验证（范围有限） | `e44198c`、`sdk/python`、`sdk/javascript`、`docs/api-sdk.md`、`examples/` | Python SDK/cURL 已验证；Node 20+ SDK `11/11`、类型声明、7 文件包内容和脱敏部署 smoke 合同通过，真实远端 smoke 未运行 | 在部署环境执行 health/models/usage smoke；不把正式长期 SDK 维护外推为已交付 |

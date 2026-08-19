@@ -32,6 +32,8 @@
     type CallerDetail,
     type CallerSummary,
     type CredentialSummary,
+    type ModelCapacitySnapshot,
+    type ModelCapacityState,
   } from "$lib/admin-api";
   import { ADMIN_UI_CONTEXT, type AdminSection, type AdminUiContext } from "$lib/admin-context";
 
@@ -106,6 +108,9 @@
   let concurrencyState = $state<CallerConcurrencyState | null>(null);
   let concurrencyError = $state<string | null>(null);
   let loadingConcurrency = $state(false);
+  let modelCapacity = $state<ModelCapacitySnapshot | null>(null);
+  let modelCapacityError = $state<string | null>(null);
+  let loadingModelCapacity = $state(false);
   let searchQuery = $state("");
   let createOpen = $state(false);
   let createForm = $state<CreateForm>(newCreateForm());
@@ -188,7 +193,7 @@
       }
       $session = restored;
       $sessionPhase = "ready";
-      await loadCallers();
+      await refreshOverview();
     } catch (error) {
       $session = null;
       $sessionPhase = "signed_out";
@@ -207,7 +212,7 @@
       loginToken = "";
       $session = loggedIn;
       $sessionPhase = "ready";
-      await loadCallers();
+      await refreshOverview();
     } catch (error) {
       reportError(error);
     } finally {
@@ -233,6 +238,8 @@
     selectedDetail = null;
     concurrencyState = null;
     concurrencyError = null;
+    modelCapacity = null;
+    modelCapacityError = null;
     policyForm = null;
     oneTimeSecret = null;
     $session = null;
@@ -271,6 +278,27 @@
     } finally {
       loadingCallers = false;
     }
+  }
+
+  async function loadModelCapacity() {
+    loadingModelCapacity = true;
+    modelCapacityError = null;
+    try {
+      modelCapacity = await api.getModelCapacity();
+    } catch (error) {
+      modelCapacity = null;
+      if (error instanceof AdminApiError && error.status === 401) {
+        reportError(error);
+      } else {
+        modelCapacityError = "模型容量与排队状态暂时不可用。";
+      }
+    } finally {
+      loadingModelCapacity = false;
+    }
+  }
+
+  async function refreshOverview() {
+    await Promise.all([loadCallers(), loadModelCapacity()]);
   }
 
   async function selectCaller(callerId: string, section?: AdminSection) {
@@ -622,6 +650,10 @@
     return { idle: "空闲", available: "可用", saturated: "已满" }[state];
   }
 
+  function modelCapacityStateLabel(state: ModelCapacityState): string {
+    return { idle: "空闲", available: "可用", saturated: "已满", queued: "排队中" }[state];
+  }
+
   function statusLabel(status: string): string {
     return (
       {
@@ -643,6 +675,8 @@
         selectedDetail = null;
         concurrencyState = null;
         concurrencyError = null;
+        modelCapacity = null;
+        modelCapacityError = null;
         policyForm = null;
         $session = null;
         $sessionPhase = "signed_out";
@@ -722,8 +756,13 @@
           <h1>总览</h1>
           <p>调用方接入、状态与配额配置概况。</p>
         </div>
-        <button class="secondary-button" type="button" onclick={loadCallers} disabled={loadingCallers}>
-          <RefreshCw class={loadingCallers ? "spin" : ""} size={15} />
+        <button
+          class="secondary-button"
+          type="button"
+          onclick={refreshOverview}
+          disabled={loadingCallers || loadingModelCapacity}
+        >
+          <RefreshCw class={loadingCallers || loadingModelCapacity ? "spin" : ""} size={15} />
           刷新
         </button>
       </div>
@@ -750,6 +789,74 @@
           <span class="metric-note">不含 QPS 与并发</span>
         </div>
       </div>
+
+      <section class="model-capacity-section" aria-labelledby="model-capacity-heading" aria-live="polite">
+        <div class="section-heading">
+          <div class="capacity-heading-copy">
+            <span class="capacity-heading-icon" aria-hidden="true"><Gauge size={16} /></span>
+            <div>
+              <h2 id="model-capacity-heading">模型容量</h2>
+              <p>全局排队与模型池实时准入状态</p>
+            </div>
+          </div>
+          {#if modelCapacity}
+            <div class="capacity-heading-status">
+              <span class:danger={modelCapacity.state === "saturated"} class="status-badge"
+                >{modelCapacityStateLabel(modelCapacity.state)}</span
+              >
+              <span class="section-meta">{formatDateMillis(modelCapacity.observed_at_ms)}</span>
+            </div>
+          {/if}
+        </div>
+
+        {#if loadingModelCapacity && !modelCapacity}
+          <div class="capacity-panel-state"><LoaderCircle class="spin" size={18} />正在读取模型容量</div>
+        {:else if modelCapacityError}
+          <div class="capacity-panel-state error" role="status"><Activity size={18} />{modelCapacityError}</div>
+        {:else if modelCapacity && modelCapacity.pool_count === 0}
+          <div class="capacity-panel-state"><Gauge size={18} />当前环境未配置模型池。</div>
+        {:else if modelCapacity}
+          <div class="model-capacity-summary" aria-label="模型容量汇总">
+            <div><span>模型池</span><strong>{modelCapacity.pool_count}</strong></div>
+            <div><span>活跃生成</span><strong>{modelCapacity.active_count} / {modelCapacity.active_limit}</strong></div>
+            <div><span>可用槽位</span><strong>{modelCapacity.active_remaining}</strong></div>
+            <div>
+              <span>全局排队</span><strong
+                >{modelCapacity.global_queue_count} / {modelCapacity.global_queue_limit}</strong
+              >
+            </div>
+          </div>
+          <div class="table-scroll">
+            <table class="data-table model-capacity-table">
+              <thead>
+                <tr><th>模型池</th><th>模型</th><th>状态</th><th>活跃 / 上限</th><th>池内排队</th><th>下一到期</th></tr>
+              </thead>
+              <tbody>
+                {#each modelCapacity.pools as pool (pool.pool_id)}
+                  <tr>
+                    <td><code>{pool.pool_id}</code></td>
+                    <td>{pool.model_ids.join("、")}</td>
+                    <td>
+                      <span class:danger={pool.state === "saturated"} class="status-badge"
+                        >{modelCapacityStateLabel(pool.state)}</span
+                      >
+                    </td>
+                    <td>{pool.active_count} / {pool.active_limit}</td>
+                    <td>{pool.pool_queue_count}</td>
+                    <td>
+                      {pool.pool_queue_count > 0
+                        ? formatDateMillis(pool.next_queue_expires_at_ms)
+                        : pool.active_count > 0
+                          ? formatDateMillis(pool.next_active_expires_at_ms)
+                          : "--"}
+                    </td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+        {/if}
+      </section>
 
       <div class="overview-grid">
         <section class="section-block" aria-labelledby="recent-callers-heading">

@@ -14,6 +14,8 @@ describe("standalone administrator console", () => {
     expect(source).toContain("权限与配额");
     expect(source).toContain("创建并签发凭据");
     expect(source).toContain("保存调用方 Secret");
+    expect(source).toContain("模型容量");
+    expect(source).toContain("全局排队");
     expect(source).not.toContain("aria-disabled");
     expect(source).not.toContain("Task 0");
     expect(source).not.toContain("待接入");

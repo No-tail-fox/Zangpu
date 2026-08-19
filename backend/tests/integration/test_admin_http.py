@@ -49,6 +49,7 @@ def settings(keys: str) -> Settings:
         admin_login_token="admin-login-token-that-is-at-least-32-bytes",  # noqa: S106
         api_credential_keys=keys,
         api_credential_active_key_id="v1",
+        model_pool_policies={"model-1": {"pool_id": "pool-1", "active_limit": 1}},
     )
 
 
@@ -344,6 +345,70 @@ def test_admin_http_observability_is_authenticated_bounded_and_csv_safe(
     assert (broad_export.status_code, broad_export.json()["error"]["code"]) == (
         422,
         "ADMIN_OBSERVABILITY_LIMIT",
+    )
+
+
+def test_admin_http_model_capacity_is_authenticated_live_and_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database, keys = runtime()
+    application = build_application(monkeypatch, database, keys)
+
+    with TestClient(application) as client:
+        unauthenticated = client.get("/api/v1/admin/capacity/model-pools")
+        client.post(
+            "/api/v1/admin/session",
+            headers={"x-zangpu-admin-token": "admin-login-token-that-is-at-least-32-bytes"},
+        )
+        idle = client.get("/api/v1/admin/capacity/model-pools")
+        asyncio.run(
+            application.state.model_pool_limiter.admit_or_enqueue(
+                pool_id="pool-1",
+                api_client_id="capacity-caller-a",
+                operation_id="capacity-active",
+                active_limit=1,
+                queue_limit=200,
+                caller_queue_limit=8,
+                queue_wait_seconds=30,
+            )
+        )
+        asyncio.run(
+            application.state.model_pool_limiter.admit_or_enqueue(
+                pool_id="pool-1",
+                api_client_id="capacity-caller-b",
+                operation_id="capacity-queued",
+                active_limit=1,
+                queue_limit=200,
+                caller_queue_limit=8,
+                queue_wait_seconds=30,
+            )
+        )
+        queued = client.get("/api/v1/admin/capacity/model-pools")
+
+        class UnavailableCapacity:
+            async def snapshot(self):
+                from backend.app.limits.redis import ControlPlaneUnavailable
+
+                raise ControlPlaneUnavailable
+
+        application.state.admin_capacity = UnavailableCapacity()
+        unavailable = client.get("/api/v1/admin/capacity/model-pools")
+
+    assert (unauthenticated.status_code, unauthenticated.json()["error"]["code"]) == (
+        401,
+        "ADMIN_AUTH_REQUIRED",
+    )
+    assert idle.status_code == 200 and idle.headers["cache-control"] == "no-store"
+    assert idle.json()["state"] == "idle"
+    assert (idle.json()["active_count"], idle.json()["global_queue_count"]) == (0, 0)
+    assert queued.status_code == 200
+    assert queued.json()["state"] == "queued"
+    assert (queued.json()["active_count"], queued.json()["global_queue_count"]) == (1, 1)
+    assert queued.json()["pools"][0]["model_ids"] == ["model-1"]
+    assert queued.json()["pools"][0]["pool_queue_count"] == 1
+    assert (unavailable.status_code, unavailable.json()["error"]["code"]) == (
+        503,
+        "ADMIN_CONTROL_PLANE_UNAVAILABLE",
     )
 
 

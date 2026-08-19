@@ -22,6 +22,7 @@ from backend.app.security.dependencies import ExternalAuthenticator
 from backend.app.security.keyring import CredentialKeyring
 from backend.app.services.admin import AdminCallerService
 from backend.app.services.callers import DatabaseCredentialResolver
+from backend.app.services.capacity import AdminCapacityService
 from backend.app.services.chat import ExternalChatService
 from backend.app.services.metadata import ExternalMetadataService
 from backend.app.services.observability import AdminObservabilityService
@@ -124,6 +125,11 @@ def create_app(
             )
             app.state.concurrency_limiter = concurrency_limiter
             app.state.model_pool_limiter = model_pool_limiter
+            app.state.admin_capacity = AdminCapacityService(
+                model_pool_limiter,
+                policies=active_settings.model_pool_policies,
+                global_queue_limit=active_settings.contract_api_global_queue_limit,
+            )
             app.state.external_chat_service = ExternalChatService(
                 sessions=database_runtime.sessions,
                 keyring=app.state.credential_keyring,

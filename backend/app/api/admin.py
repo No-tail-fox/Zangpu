@@ -21,6 +21,7 @@ from backend.app.services.admin import (
     AdminCallerService,
     AdminCallerStateError,
 )
+from backend.app.services.capacity import AdminCapacityService
 from backend.app.services.observability import (
     AdminEventQuery,
     AdminObservabilityLimitError,
@@ -92,6 +93,10 @@ def _retention_service(request: Request) -> RetentionService:
 
 def _concurrency_limiter(request: Request) -> ConcurrencyLimiter:
     return request.app.state.concurrency_limiter
+
+
+def _capacity_service(request: Request) -> AdminCapacityService:
+    return request.app.state.admin_capacity
 
 
 def read_admin_event_query(
@@ -183,6 +188,25 @@ async def list_callers(
             "offset": offset,
             "limit": limit,
         },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.get("/capacity/model-pools")
+async def get_model_pool_capacity(
+    request: Request,
+    _claims: Annotated[AdminSessionClaims, Depends(require_admin_session)],
+) -> JSONResponse:
+    try:
+        snapshot = await _capacity_service(request).snapshot()
+    except ControlPlaneUnavailable as exc:
+        raise AdminApiError(
+            "ADMIN_CONTROL_PLANE_UNAVAILABLE",
+            503,
+            "Model capacity is temporarily unavailable.",
+        ) from exc
+    return JSONResponse(
+        content=snapshot.model_dump(mode="json"),
         headers={"Cache-Control": "no-store"},
     )
 
