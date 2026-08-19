@@ -104,6 +104,85 @@ export interface ModelCapacitySnapshot {
   pools: ModelPoolCapacity[];
 }
 
+export interface AdminEventQuery {
+  api_client_id?: string;
+  created_from?: number;
+  created_to?: number;
+  outcome?: string;
+  stage?: string;
+  http_status?: number;
+  business_code?: string;
+  endpoint?: string;
+  model_id?: string;
+  stream?: boolean;
+}
+
+export interface AdminEventItem {
+  id: string;
+  server_request_id: string;
+  client_request_id: string;
+  operation_id: string | null;
+  api_client_id: string | null;
+  credential_id: string | null;
+  endpoint: string;
+  method: string;
+  model_id: string | null;
+  stream: boolean;
+  outcome: string;
+  stage: string;
+  http_status: number;
+  business_code: string;
+  retryable: boolean;
+  duration_ms: number;
+  quota_overrun: boolean;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  charged_micro: number;
+  qps_observed: number;
+  concurrency_observed: number;
+  daily_requests_after: number;
+  daily_tokens_after: number;
+  total_requests_after: number;
+  total_tokens_after: number;
+  remote_ip_hash: string | null;
+  user_agent_family: string | null;
+  started_at: number;
+  completed_at: number;
+  created_at: number;
+}
+
+export interface AdminEventPage {
+  items: AdminEventItem[];
+  total: number;
+  offset: number;
+  limit: number;
+}
+
+export interface AdminEventTrendBucket {
+  bucket_start: number;
+  request_count: number;
+  success_count: number;
+  failure_count: number;
+  total_tokens: number;
+  charged_micro: number;
+}
+
+export interface AdminEventSummary {
+  request_count: number;
+  success_count: number;
+  failure_count: number;
+  total_tokens: number;
+  charged_micro: number;
+  average_duration_ms: number | null;
+  duration_p50_ms: number | null;
+  duration_p95_ms: number | null;
+  duration_p99_ms: number | null;
+  quota_overrun_count: number;
+  bucket_seconds: number;
+  trend: AdminEventTrendBucket[];
+}
+
 export interface AdminCallerCreateInput {
   name: string;
   description: string | null;
@@ -235,6 +314,24 @@ export class AdminApiClient {
     return this.request("/capacity/model-pools", { method: "GET" });
   }
 
+  listEvents(query: AdminEventQuery = {}, offset = 0, limit = 50): Promise<AdminEventPage> {
+    const params = eventQueryParams(query);
+    params.set("offset", String(offset));
+    params.set("limit", String(limit));
+    return this.request(`/events?${params.toString()}`, { method: "GET" });
+  }
+
+  summarizeEvents(query: AdminEventQuery = {}, bucketSeconds = 3600): Promise<AdminEventSummary> {
+    const params = eventQueryParams(query);
+    params.set("bucket_seconds", String(bucketSeconds));
+    return this.request(`/events/summary?${params.toString()}`, { method: "GET" });
+  }
+
+  exportEvents(query: AdminEventQuery = {}): Promise<Blob> {
+    const params = eventQueryParams(query);
+    return this.request(`/events/export?${params.toString()}`, { method: "POST", csrf: true }, "blob");
+  }
+
   createCaller(payload: AdminCallerCreateInput, idempotencyKey: string): Promise<CallerCreateResult> {
     return this.request("/callers", {
       method: "POST",
@@ -274,7 +371,7 @@ export class AdminApiClient {
     });
   }
 
-  private async request<T>(path: string, options: RequestOptions): Promise<T> {
+  private async request<T>(path: string, options: RequestOptions, responseType: "json" | "blob" = "json"): Promise<T> {
     const { csrf = false, idempotencyKey, ...init } = options;
     const headers = new Headers(init.headers);
     headers.set("Accept", "application/json");
@@ -299,6 +396,8 @@ export class AdminApiClient {
       throw new AdminApiError(0, "ADMIN_NETWORK_ERROR", "Administrator service is unavailable.");
     }
 
+    if (responseType === "blob" && response.ok) return (await response.blob()) as T;
+
     const contentType = response.headers.get("content-type") ?? "";
     const payload = contentType.includes("application/json")
       ? ((await response.json().catch(() => null)) as T | AdminErrorEnvelope | null)
@@ -319,4 +418,12 @@ export class AdminApiClient {
     }
     return payload as T;
   }
+}
+
+function eventQueryParams(query: AdminEventQuery): URLSearchParams {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined && value !== null && value !== "") params.set(key, String(value));
+  }
+  return params;
 }

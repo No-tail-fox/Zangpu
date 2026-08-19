@@ -10,6 +10,8 @@ import {
   type CallerDetail,
   type CallerSummary,
   type CredentialSummary,
+  type AdminEventPage,
+  type AdminEventSummary,
   type ModelCapacitySnapshot,
 } from "./admin-api";
 
@@ -105,6 +107,72 @@ const modelCapacity: ModelCapacitySnapshot = {
       observed_at_ms: 1_800_000_200_000,
     },
   ],
+};
+
+const eventSummary: AdminEventSummary = {
+  request_count: 12,
+  success_count: 10,
+  failure_count: 2,
+  total_tokens: 2400,
+  charged_micro: 1800,
+  average_duration_ms: 840,
+  duration_p50_ms: 600,
+  duration_p95_ms: 1800,
+  duration_p99_ms: 2200,
+  quota_overrun_count: 1,
+  bucket_seconds: 3600,
+  trend: [
+    {
+      bucket_start: 1_800_000_000,
+      request_count: 12,
+      success_count: 10,
+      failure_count: 2,
+      total_tokens: 2400,
+      charged_micro: 1800,
+    },
+  ],
+};
+
+const eventPage: AdminEventPage = {
+  items: [
+    {
+      id: "event-1",
+      server_request_id: "req-1",
+      client_request_id: "client-req-1",
+      operation_id: null,
+      api_client_id: "caller-1",
+      credential_id: "credential-1",
+      endpoint: "chat.completions",
+      method: "POST",
+      model_id: "zangpu-chat",
+      stream: false,
+      outcome: "success",
+      stage: "response",
+      http_status: 200,
+      business_code: "OK",
+      retryable: false,
+      duration_ms: 600,
+      quota_overrun: false,
+      prompt_tokens: 100,
+      completion_tokens: 200,
+      total_tokens: 300,
+      charged_micro: 240,
+      qps_observed: 1,
+      concurrency_observed: 1,
+      daily_requests_after: 1,
+      daily_tokens_after: 300,
+      total_requests_after: 1,
+      total_tokens_after: 300,
+      remote_ip_hash: null,
+      user_agent_family: "SDK",
+      started_at: 1_800_000_000,
+      completed_at: 1_800_000_001,
+      created_at: 1_800_000_001,
+    },
+  ],
+  total: 1,
+  offset: 0,
+  limit: 50,
 };
 
 const createInput: AdminCallerCreateInput = {
@@ -218,6 +286,27 @@ describe("administrator API client", () => {
     expect(init?.method).toBe("GET");
     expect(headers.has("X-Zangpu-CSRF")).toBe(false);
     expect(headers.has("Idempotency-Key")).toBe(false);
+  });
+
+  it("loads bounded event summaries and exports with CSRF", async () => {
+    const csv = new Blob(["id,outcome\nevent-1,success\n"], { type: "text/csv" });
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(eventPage))
+      .mockResolvedValueOnce(jsonResponse(eventSummary))
+      .mockResolvedValueOnce(new Response(csv, { status: 200, headers: { "content-type": "text/csv" } }));
+    const api = new AdminApiClient(fetcher, session);
+
+    await expect(api.listEvents({ outcome: "success", model_id: "zangpu-chat" })).resolves.toEqual(eventPage);
+    await expect(api.summarizeEvents({ stage: "response" }, 300)).resolves.toEqual(eventSummary);
+    await expect(api.exportEvents({ outcome: "success" })).resolves.toBeInstanceOf(Blob);
+
+    expect(fetcher.mock.calls[0][0]).toContain("outcome=success");
+    expect(fetcher.mock.calls[0][0]).toContain("model_id=zangpu-chat");
+    expect(fetcher.mock.calls[1][0]).toContain("bucket_seconds=300");
+    const exportInit = fetcher.mock.calls[2][1];
+    expect(exportInit?.method).toBe("POST");
+    expect(new Headers(exportInit?.headers).get("X-Zangpu-CSRF")).toBe(session.csrf_token);
   });
 
   it("surfaces bounded administrator errors without leaking response text", async () => {

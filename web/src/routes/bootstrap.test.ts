@@ -16,6 +16,9 @@ describe("standalone administrator console", () => {
     expect(source).toContain("保存调用方 Secret");
     expect(source).toContain("模型容量");
     expect(source).toContain("全局排队");
+    expect(source).toContain("调用记录");
+    expect(source).toContain("成功率");
+    expect(source).toContain("导出 CSV");
     expect(source).not.toContain("aria-disabled");
     expect(source).not.toContain("Task 0");
     expect(source).not.toContain("待接入");

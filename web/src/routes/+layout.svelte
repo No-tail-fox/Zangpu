@@ -1,5 +1,6 @@
 <script lang="ts">
   import {
+    Activity,
     ChartNoAxesCombined,
     Gauge,
     KeyRound,
@@ -23,6 +24,7 @@
     { id: "callers", label: "调用方", icon: UsersRound },
     { id: "credentials", label: "凭据", icon: KeyRound },
     { id: "policy", label: "权限与配额", icon: Gauge },
+    { id: "events", label: "调用记录", icon: Activity },
   ];
 
   const activeSection = writable<AdminSection>("overview");

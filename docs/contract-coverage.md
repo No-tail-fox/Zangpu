@@ -27,7 +27,7 @@
 | 调用方模型/端点权限隔离 | 已验证（API + 本地 Web） | `ApiClient.allowed_models/allowed_endpoints`、metadata/chat policy、版本化 policy update 和权限复选界面 | caller isolation、signed `/models`/`/usage`、管理更新及浏览器操作通过；绑定提供方/初始模型仍只读 | 部署环境验证 Bifrost 单绑定同步及真实模型可见性 |
 | JSON/SSE REST API、统一错误、版本化 | 已验证 | `c910df1`、`dca1b13`、`2dc7bee` | backend `155 passed` 基线、signed HTTP 和 SSE 合同通过 | 生成/补齐面向客户的 OpenAPI/API 文档和部署 smoke |
 | Python/JavaScript SDK、PowerShell/cURL、示例 | 已验证（范围有限） | `e44198c`、`sdk/python`、`sdk/javascript`、`docs/api-sdk.md`、`examples/` | Python SDK/cURL 已验证；Node 20+ SDK `11/11`、类型声明、7 文件包内容和脱敏部署 smoke 合同通过，真实远端 smoke 未运行 | 在部署环境执行 health/models/usage smoke；不把正式长期 SDK 维护外推为已交付 |
-| API 调用记录、异常、统计和监控趋势 | 已验证 API/缺失 UI | `ApiCallEvent`、`AdminObservabilityService`、`RetentionService`、管理员 events/summary/export/retention 路由及不可变审计 | 筛选分页、精确 P50/P95/P99、UTC 趋势、受限 CSV、固定策略预览和有界清理已通过服务/HTTP/迁移合同；无管理页面，真实 PostgreSQL 数据量、调度、vacuum 和备份联动未验证 | 经截图审查后接入记录/趋势/保留期页；部署环境验证索引计划、批处理调度和恢复流程 |
+| API 调用记录、异常、统计和监控趋势 | 已验证（API + 本地 Web） | `ApiCallEvent`、`AdminObservabilityService`、管理员 events/summary/export 路由、typed Web client 和中文调用记录页 | 筛选分页、精确 P50/P95/P99、UTC 趋势和 CSRF 受限 CSV 已通过服务/HTTP/Web/桌面移动截图；页面不展示请求正文；真实 PostgreSQL 数据量与索引计划未验证 | 部署环境验证真实事件量、查询计划和导出上限；保留期维护页仍待接入 |
 | k6 基础压测脚本和结果记录 | 已验证工具/外部阻塞容量结论 | `load/k6/signed-api.js`、`run.ps1`、`docs/load-testing.md` | 官方 k6 v2.1.0 delivery `6/6`；metadata 签名和精确并发 200/429 回环通过 | 在部署环境跑 smoke/steady/burst/concurrency，形成 P50/P95/P99 与容量结论 |
 | 模型部署、GPU、真实 Provider | 外部阻塞 | Bifrost typed client/preflight、内部模型路由 | loopback Bifrost v1.6.3 PoC 通过；无甲方 GPU/模型部署证据 | 甲方提供资源后做部署、超时、真实模型和容量验收 |
 | 真实 Open WebUI/ PostgreSQL/ Valkey 集成 | 外部阻塞 | Compose 拓扑和 lifespan ownership 已实现 | Docker CLI 不可用；本地 SQLite/fakeredis/mock 不替代部署证据 | 在部署环境执行迁移、跨服务 chat/credit、故障恢复和性能门禁 |
@@ -37,11 +37,11 @@
 
 ## 结论与执行顺序
 
-当前仍不能宣称“合同核心功能完成”或“真实部署压测完成”。底层受控 API、签名安全、并发/配额控制、管理员调用方管理、SDK/cURL 和官方 k6 loopback 已达到可复核状态；真实四服务容量、调用记录/趋势管理页、模型/GPU、语音、签名 Windows 交付、恢复演练和最终验收文档仍是外部或后续交付门禁。
+当前仍不能宣称“合同核心功能完成”或“真实部署压测完成”。底层受控 API、签名安全、并发/配额控制、管理员调用方管理、调用记录/趋势 Web、SDK/cURL 和官方 k6 loopback 已达到可复核状态；真实四服务容量、模型/GPU、语音、签名 Windows 交付、保留期 Web、恢复演练和最终验收文档仍是外部或后续交付门禁。
 
 本地下一步固定为：
 
 1. 在部署环境通过管理站端口验证真实 Cookie/CSRF、PostgreSQL caller 数据、Valkey 实时占用和反向代理。
 2. 使用专用低额度 caller 运行真实 `concurrency` 档，归档脱敏 JSON、版本哈希和 P50/P95/P99；本地回环不能替代该结论。
-3. 将已完成的调用记录/趋势/导出后端接入管理 Web，并做同级桌面/移动视觉验收。
+3. 将已完成的保留期预览/确认后端接入管理 Web，并做同级桌面/移动视觉验收。
 4. 继续推进 Open WebUI 积分分支合并、真实 Bifrost outbox、GPU/模型、语音、恢复演练和最终交付包。

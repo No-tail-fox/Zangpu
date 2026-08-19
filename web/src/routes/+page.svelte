@@ -5,6 +5,8 @@
     CheckCircle2,
     Clipboard,
     Copy,
+    Download,
+    FileText,
     Gauge,
     KeyRound,
     LoaderCircle,
@@ -27,6 +29,9 @@
     AdminApiError,
     type AdminCallerCreateInput,
     type AdminCallerPatchInput,
+    type AdminEventPage,
+    type AdminEventQuery,
+    type AdminEventSummary,
     type AdminEndpointPermission,
     type CallerConcurrencyState,
     type CallerDetail,
@@ -111,6 +116,15 @@
   let modelCapacity = $state<ModelCapacitySnapshot | null>(null);
   let modelCapacityError = $state<string | null>(null);
   let loadingModelCapacity = $state(false);
+  let eventPage = $state<AdminEventPage | null>(null);
+  let eventSummary = $state<AdminEventSummary | null>(null);
+  let eventError = $state<string | null>(null);
+  let loadingEvents = $state(false);
+  let eventOutcome = $state("all");
+  let eventStage = $state("all");
+  let eventBucket = $state(3600);
+  let eventOffset = $state(0);
+  const eventPageSize = 50;
   let searchQuery = $state("");
   let createOpen = $state(false);
   let createForm = $state<CreateForm>(newCreateForm());
@@ -130,6 +144,10 @@
       handledLogoutRequest = $logoutRequested;
       void signOut();
     }
+  });
+
+  $effect(() => {
+    if ($sessionPhase === "ready" && $activeSection === "events") void loadEvents();
   });
 
   function newCreateForm(): CreateForm {
@@ -240,6 +258,9 @@
     concurrencyError = null;
     modelCapacity = null;
     modelCapacityError = null;
+    eventPage = null;
+    eventSummary = null;
+    eventError = null;
     policyForm = null;
     oneTimeSecret = null;
     $session = null;
@@ -299,6 +320,64 @@
 
   async function refreshOverview() {
     await Promise.all([loadCallers(), loadModelCapacity()]);
+  }
+
+  function eventQuery(): AdminEventQuery {
+    return {
+      ...(eventOutcome === "all" ? {} : { outcome: eventOutcome }),
+      ...(eventStage === "all" ? {} : { stage: eventStage }),
+    };
+  }
+
+  async function loadEvents() {
+    loadingEvents = true;
+    eventError = null;
+    try {
+      const query = eventQuery();
+      const [page, summary] = await Promise.all([
+        api.listEvents(query, eventOffset, eventPageSize),
+        api.summarizeEvents(query, eventBucket),
+      ]);
+      eventPage = page;
+      eventSummary = summary;
+    } catch (error) {
+      if (error instanceof AdminApiError && error.status === 401) reportError(error);
+      else eventError = "调用记录暂时不可用，请稍后重试。";
+    } finally {
+      loadingEvents = false;
+    }
+  }
+
+  async function applyEventFilters() {
+    eventOffset = 0;
+    await loadEvents();
+  }
+
+  async function changeEventPage(direction: -1 | 1) {
+    if (!eventPage) return;
+    const next = eventOffset + direction * eventPageSize;
+    if (next < 0 || next >= eventPage.total) return;
+    eventOffset = next;
+    await loadEvents();
+  }
+
+  async function exportEvents() {
+    actionPending = "event-export";
+    eventError = null;
+    try {
+      const blob = await api.exportEvents(eventQuery());
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `zangpu-api-events-${new Date().toISOString().slice(0, 10)}.csv`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      if (error instanceof AdminApiError && error.status === 401) reportError(error);
+      else eventError = "导出失败，请缩小筛选范围后重试。";
+    } finally {
+      actionPending = null;
+    }
   }
 
   async function selectCaller(callerId: string, section?: AdminSection) {
@@ -654,6 +733,47 @@
     return { idle: "空闲", available: "可用", saturated: "已满", queued: "排队中" }[state];
   }
 
+  function eventOutcomeLabel(outcome: string): string {
+    return (
+      {
+        success: "成功",
+        cancelled: "已取消",
+        rejected: "已拒绝",
+        provider_error: "提供方错误",
+        system_error: "系统错误",
+        abandoned: "已放弃",
+      }[outcome] ?? outcome
+    );
+  }
+
+  function eventStageLabel(stage: string): string {
+    return (
+      {
+        request: "请求",
+        auth: "认证",
+        permission: "权限",
+        rate_limit: "速率限制",
+        quota: "配额",
+        credit: "积分",
+        provider: "提供方",
+        response: "响应",
+        recovery: "恢复",
+      }[stage] ?? stage
+    );
+  }
+
+  function formatDuration(value: number | null): string {
+    return value === null ? "--" : `${Math.round(value)} ms`;
+  }
+
+  function formatChargedMicro(value: number): string {
+    return `${value.toLocaleString("zh-CN")} 微单位`;
+  }
+
+  function successRate(summary: AdminEventSummary): string {
+    return summary.request_count === 0 ? "--" : `${Math.round((summary.success_count / summary.request_count) * 100)}%`;
+  }
+
   function statusLabel(status: string): string {
     return (
       {
@@ -677,6 +797,9 @@
         concurrencyError = null;
         modelCapacity = null;
         modelCapacityError = null;
+        eventPage = null;
+        eventSummary = null;
+        eventError = null;
         policyForm = null;
         $session = null;
         $sessionPhase = "signed_out";
@@ -1335,6 +1458,168 @@
           {/if}
         </section>
       </div>
+    {:else if $activeSection === "events"}
+      <div class="page-header">
+        <div>
+          <h1>调用记录</h1>
+          <p>查看终态请求、成功率、延迟分位和按小时趋势。</p>
+        </div>
+        <div class="detail-actions">
+          <button class="secondary-button" type="button" onclick={loadEvents} disabled={loadingEvents}>
+            <RefreshCw class={loadingEvents ? "spin" : ""} size={15} />刷新
+          </button>
+          <button class="primary-button" type="button" onclick={exportEvents} disabled={actionPending !== null}>
+            {#if actionPending === "event-export"}<LoaderCircle class="spin" size={15} />{:else}<Download
+                size={15}
+              />{/if}
+            导出 CSV
+          </button>
+        </div>
+      </div>
+
+      {#if eventError}
+        <div class="alert danger page-alert" role="alert"><span>{eventError}</span></div>
+      {/if}
+
+      <section class="event-filters section-block" aria-labelledby="event-filter-heading">
+        <div class="section-heading">
+          <div class="capacity-heading-copy">
+            <span class="capacity-heading-icon" aria-hidden="true"><FileText size={16} /></span>
+            <div>
+              <h2 id="event-filter-heading">筛选条件</h2>
+              <p>只读取脱敏终态事件</p>
+            </div>
+          </div>
+          <span class="section-meta">{eventPage ? `${eventPage.total} 条记录` : "等待读取"}</span>
+        </div>
+        <div class="event-filter-grid">
+          <label class="field"
+            ><span>结果</span><select bind:value={eventOutcome} onchange={applyEventFilters}>
+              <option value="all">全部结果</option><option value="success">成功</option><option value="rejected"
+                >已拒绝</option
+              >
+              <option value="provider_error">提供方错误</option><option value="system_error">系统错误</option>
+            </select></label
+          >
+          <label class="field"
+            ><span>阶段</span><select bind:value={eventStage} onchange={applyEventFilters}>
+              <option value="all">全部阶段</option><option value="auth">认证</option><option value="quota">配额</option>
+              <option value="credit">积分</option><option value="provider">提供方</option><option value="response"
+                >响应</option
+              >
+            </select></label
+          >
+          <label class="field"
+            ><span>趋势粒度</span><select bind:value={eventBucket} onchange={applyEventFilters}>
+              <option value={300}>5 分钟</option><option value={3600}>1 小时</option><option value={86400}>1 天</option>
+            </select></label
+          >
+        </div>
+      </section>
+
+      {#if loadingEvents && !eventSummary}
+        <div class="loading-state detail-loading"><LoaderCircle class="spin" size={20} />正在载入调用记录</div>
+      {:else if eventSummary && eventPage}
+        <div class="event-summary-grid" aria-label="调用记录摘要">
+          <div><span>请求总数</span><strong>{eventSummary.request_count}</strong><small>当前筛选</small></div>
+          <div>
+            <span>成功率</span><strong>{successRate(eventSummary)}</strong><small
+              >{eventSummary.success_count} 成功 / {eventSummary.failure_count} 失败</small
+            >
+          </div>
+          <div>
+            <span>P95 延迟</span><strong>{formatDuration(eventSummary.duration_p95_ms)}</strong><small
+              >P50 {formatDuration(eventSummary.duration_p50_ms)}</small
+            >
+          </div>
+          <div>
+            <span>Token 总量</span><strong>{eventSummary.total_tokens.toLocaleString("zh-CN")}</strong><small
+              >{formatChargedMicro(eventSummary.charged_micro)}</small
+            >
+          </div>
+        </div>
+
+        <section class="event-trend-section section-block" aria-labelledby="event-trend-heading">
+          <div class="section-heading">
+            <h2 id="event-trend-heading">趋势</h2>
+            <span class="section-meta">按 UTC 对齐</span>
+          </div>
+          {#if eventSummary.trend.length === 0}
+            <div class="empty-state compact"><Activity size={22} /><strong>当前筛选暂无趋势数据</strong></div>
+          {:else}
+            <div class="table-scroll">
+              <table class="data-table event-trend-table">
+                <thead><tr><th>时间段</th><th>请求</th><th>成功</th><th>失败</th><th>Token</th><th>计费</th></tr></thead
+                >
+                <tbody
+                  >{#each eventSummary.trend as bucket (bucket.bucket_start)}
+                    <tr
+                      ><td>{formatDate(bucket.bucket_start)}</td><td>{bucket.request_count}</td><td
+                        >{bucket.success_count}</td
+                      ><td>{bucket.failure_count}</td><td>{bucket.total_tokens.toLocaleString("zh-CN")}</td><td
+                        >{formatChargedMicro(bucket.charged_micro)}</td
+                      ></tr
+                    >
+                  {/each}</tbody
+                >
+              </table>
+            </div>
+          {/if}
+        </section>
+
+        <section class="event-list-section section-block" aria-labelledby="event-list-heading">
+          <div class="section-heading">
+            <h2 id="event-list-heading">事件明细</h2>
+            <span class="section-meta">不显示请求正文</span>
+          </div>
+          {#if eventPage.items.length === 0}
+            <div class="empty-state compact"><FileText size={22} /><strong>当前筛选暂无调用记录</strong></div>
+          {:else}
+            <div class="table-scroll">
+              <table class="data-table event-list-table">
+                <thead
+                  ><tr
+                    ><th>时间</th><th>模型</th><th>结果</th><th>阶段</th><th>状态码</th><th>耗时</th><th>Token</th></tr
+                  ></thead
+                >
+                <tbody
+                  >{#each eventPage.items as event (event.id)}
+                    <tr
+                      ><td>{formatDate(event.created_at)}</td><td>{event.model_id ?? "--"}</td><td
+                        ><span class:danger={event.outcome !== "success"} class="status-badge"
+                          >{eventOutcomeLabel(event.outcome)}</span
+                        ></td
+                      ><td>{eventStageLabel(event.stage)}</td><td>{event.http_status}</td><td
+                        >{formatDuration(event.duration_ms)}</td
+                      ><td>{event.total_tokens.toLocaleString("zh-CN")}</td></tr
+                    >
+                  {/each}</tbody
+                >
+              </table>
+            </div>
+            <div class="event-pagination">
+              <span
+                >第 {eventOffset + 1}–{Math.min(eventOffset + eventPage.items.length, eventPage.total)} 条，共
+                {eventPage.total} 条</span
+              >
+              <div>
+                <button
+                  class="secondary-button small"
+                  type="button"
+                  disabled={eventOffset === 0 || loadingEvents}
+                  onclick={() => changeEventPage(-1)}>上一页</button
+                >
+                <button
+                  class="secondary-button small"
+                  type="button"
+                  disabled={eventOffset + eventPageSize >= eventPage.total || loadingEvents}
+                  onclick={() => changeEventPage(1)}>下一页</button
+                >
+              </div>
+            </div>
+          {/if}
+        </section>
+      {/if}
     {/if}
   </section>
 {/if}
